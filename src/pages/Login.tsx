@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../AuthContext';
+import logoDoGroup from '../assets/logoG.png';
 import {
   TextInput,
   PasswordInput,
@@ -22,6 +23,9 @@ type UserType = 'admin' | 'empresa' | 'auditor';
 
 interface LoginResponse {
   access_token: string;
+  refresh_token?: string;
+  role?: UserType;
+  nombre?: string;
   user_type?: UserType;
   user_id?: string;
   _id?: string;
@@ -44,7 +48,7 @@ interface LoginResponse {
 }
 
 interface FormValues {
-  username: string;
+  email: string;
   password: string;
 }
 
@@ -75,7 +79,7 @@ export function Login() {
   const navigate = useNavigate();
   const auth = useAuth();
   const [loading, setLoading] = useState(false);
-  const [useMockAuth, setUseMockAuth] = useState(true); // 🔄 Cambiar a false para usar API real
+  const [useMockAuth] = useState(true); // 🔄 Cambiar a false para usar API real
 
   // Redirigir si ya está autenticado
   useEffect(() => {
@@ -88,11 +92,11 @@ export function Login() {
   const form = useForm<FormValues>({
     mode: 'uncontrolled',
     initialValues: {
-      username: '',
+      email: '',
       password: '',
     },
     validate: {
-      username: (value) => (!value ? 'El email es requerido' : null),
+      email: (value) => (!value ? 'El email es requerido' : null),
       password: (value) => (!value ? 'La contraseña es requerida' : null),
     },
   });
@@ -174,7 +178,7 @@ export function Login() {
     // Simular delay de red
     await new Promise(resolve => setTimeout(resolve, 800));
 
-    const mockUser = MOCK_USERS[values.username as keyof typeof MOCK_USERS];
+    const mockUser = MOCK_USERS[values.email as keyof typeof MOCK_USERS];
 
     if (!mockUser) {
       showNotification({
@@ -243,15 +247,21 @@ export function Login() {
 
     try {
       const login: LoginResponse = await BasicPetition({
-        endpoint: '/certificate-auth/login',
+        endpoint: '/auth/login',
         method: 'POST',
         data: values,
         showNotifications: false,
       });
 
       if (login.access_token) {
-        const displayName = extractDisplayName(login);
-        const userType = login.user_type;
+        // Guardar refresh_token si existe
+        if (login.refresh_token) {
+          localStorage.setItem('mi_app_refresh_token', login.refresh_token);
+        }
+
+        // Usar 'role' y 'nombre' de la respuesta
+        const displayName = login.nombre || extractDisplayName(login);
+        const userType = login.role || login.user_type;
         const userId = login.user_id ?? login._id ?? login.id ?? '';
         const photoUrl = login.fotoPerfil ?? login.photo ?? login.profile_photo ?? login.user?.fotoPerfil ?? login.user?.photo;
 
@@ -298,11 +308,18 @@ export function Login() {
 
           <form onSubmit={form.onSubmit(handleSubmit)}>
             {/* Logo */}
-            <img
-              src="/logoG.png"
-              alt="DO-GROUP Logo"
-              className="login-form-logo"
-            />
+            <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+              <img
+                src={logoDoGroup}
+                alt="DO-GROUP Logo"
+                style={{
+                  width: '200px',
+                  height: 'auto',
+                  maxWidth: '100%',
+                  display: 'inline-block'
+                }}
+              />
+            </div>
 
             {/* Título SGI con tipografía mejorada */}
             <Title
@@ -349,7 +366,7 @@ export function Login() {
               required
               size="md"
               mb="md"
-              {...form.getInputProps('username')}
+              {...form.getInputProps('email')}
             />
 
             {/* Campo de Contraseña */}

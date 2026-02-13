@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, type ReactNode } from 'react';
 
 const AUTH_TOKEN_KEY = 'mi_app_token';
+const AUTH_REFRESH_TOKEN_KEY = 'mi_app_refresh_token';
 const AUTH_USER_TYPE_KEY = 'mi_app_user_type';
 const AUTH_USER_ID_KEY = 'mi_app_user_id';
 
@@ -47,9 +48,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = (callback?: () => void) => {
     localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_REFRESH_TOKEN_KEY);
     localStorage.removeItem(AUTH_USER_TYPE_KEY);
     localStorage.removeItem(AUTH_USER_ID_KEY);
     localStorage.removeItem('mi_app_user_name'); // Limpiar nombre también
+    localStorage.removeItem('mi_app_user_photo'); // Limpiar foto también
     setIsAuthenticated(false);
     setUserType(null);
     setUserId(null);

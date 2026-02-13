@@ -2,6 +2,7 @@ import { AppShell, Burger, Group, Text, Avatar, Modal, Stack, Button, FileInput 
 import { useDisclosure } from '@mantine/hooks';
 import { Outlet } from 'react-router-dom';
 import { Navbar } from './Navbar';
+import logoDoGroup from '../assets/logoG.png';
 import { useState, useEffect } from 'react';
 import { FaBuilding, FaUserShield, FaClipboardCheck, FaUser, FaFileUpload, FaTrash } from 'react-icons/fa';
 import { showNotification } from '@mantine/notifications';
@@ -75,9 +76,9 @@ export function AppLayout() {
             size="sm"
           />
           <img
-            src="/logoG.png"
+            src={logoDoGroup}
             alt="DoGroup"
-            style={{ height: 50, width: 'auto' }}
+            style={{ height: 50, width: 'auto', objectFit: 'contain' }}
           />
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
             {userName && (

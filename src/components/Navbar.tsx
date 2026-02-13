@@ -7,7 +7,6 @@ import {
   FaFileAlt,
   FaBookOpen,
   FaUser,
-  FaHome,
 } from 'react-icons/fa';
 
 
