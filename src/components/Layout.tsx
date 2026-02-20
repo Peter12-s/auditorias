@@ -1,4 +1,4 @@
-import { AppShell, Burger, Group, Text, Avatar, Modal, Stack, Button, FileInput } from '@mantine/core';
+import { AppShell, Burger, Group, Text, Avatar, Modal, Stack, Button, FileInput, Box } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { Outlet } from 'react-router-dom';
 import { Navbar } from './Navbar';
@@ -16,13 +16,13 @@ export function AppLayout() {
 
   useEffect(() => {
     // Obtener nombre de usuario desde localStorage
-    const storedName = localStorage.getItem('mi_app_user_name');
+    const storedName = localStorage.getItem('mi_app_user_name') || localStorage.getItem('fullName');
     if (storedName) {
       setUserName(storedName);
     }
 
     // Obtener tipo de usuario desde localStorage
-    const storedType = localStorage.getItem('mi_app_user_type');
+    const storedType = localStorage.getItem('mi_app_user_type') || localStorage.getItem('role');
     if (storedType) {
       setUserType(storedType);
     }
@@ -35,8 +35,8 @@ export function AppLayout() {
 
     // Escuchar cambios en el storage (por si se actualiza en otra pestaña o al hacer login)
     const handleStorageChange = () => {
-      const updatedName = localStorage.getItem('mi_app_user_name');
-      const updatedType = localStorage.getItem('mi_app_user_type');
+      const updatedName = localStorage.getItem('mi_app_user_name') || localStorage.getItem('fullName');
+      const updatedType = localStorage.getItem('mi_app_user_type') || localStorage.getItem('role');
       const updatedPhoto = localStorage.getItem('mi_app_user_photo');
       setUserName(updatedName || '');
       setUserType(updatedType || '');
@@ -49,8 +49,10 @@ export function AppLayout() {
 
   // Función para obtener el ícono según el tipo de usuario
   const getUserIcon = () => {
-    switch (userType) {
+    const normalizedType = userType.toLowerCase();
+    switch (normalizedType) {
       case 'admin':
+      case 'administrador':
         return <FaUserShield size={18} color="#495057" />;
       case 'auditor':
         return <FaClipboardCheck size={18} color="#495057" />;
@@ -59,6 +61,32 @@ export function AppLayout() {
       default:
         return <FaUserShield size={18} color="#495057" />;
     }
+  };
+
+  // Renderizar nombre formateado (empresas con guión en dos líneas)
+  const renderUserName = () => {
+    if (!userName) return null;
+    
+    // Si el nombre contiene guión medio, es una empresa
+    if (userName.includes(' - ')) {
+      const [empresa, sucursal] = userName.split(' - ');
+      return (
+        <Box style={{ textAlign: 'right', lineHeight: 1.2 }}>
+          <Text size="sm" fw={600} c="#495057" style={{ marginBottom: 0 }}>
+            {empresa}
+          </Text>
+          <Text size="xs" c="dimmed">
+            {sucursal}
+          </Text>
+        </Box>
+      );
+    }
+    
+    return (
+      <Text size="md" fw={600} c="#495057">
+        {userName}
+      </Text>
+    );
   };
 
   return (
@@ -84,13 +112,11 @@ export function AppLayout() {
             {userName && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, backgroundColor: '#f1f3f5', padding: '6px 12px', borderRadius: 8 }}>
                 {getUserIcon()}
-                <Text size="md" fw={600} c="#495057">
-                  {userName}
-                </Text>
+                {renderUserName()}
               </div>
             )}
             {/* Foto de perfil del auditor */}
-            {userType === 'auditor' && (
+            {(userType.toLowerCase() === 'auditor') && (
               <Avatar
                 src={userPhoto || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200'}
                 alt={userName}

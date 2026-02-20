@@ -6,9 +6,63 @@ interface PetitionOptions {
   data?: any;
   headers?: Record<string, string>;
   showNotifications?: boolean;
+  skipRefresh?: boolean; // Para evitar loops infinitos en refresh
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+// En desarrollo, usa el proxy de Vite apuntando a /api
+// En producción, usa la variable de entorno o la URL completa
+const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? '/api' : 'http://localhost:3000/api');
+let isRefreshing = false;
+let refreshSubscribers: ((token: string) => void)[] = [];
+
+function onRefreshed(token: string) {
+  refreshSubscribers.forEach((callback) => callback(token));
+  refreshSubscribers = [];
+}
+
+function addRefreshSubscriber(callback: (token: string) => void) {
+  refreshSubscribers.push(callback);
+}
+
+async function refreshAccessToken(): Promise<string | null> {
+  const refreshToken = localStorage.getItem('refresh_token');
+  
+  if (!refreshToken) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ refreshToken }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Refresh token inválido');
+    }
+
+    const data = await response.json();
+    const newAccessToken = data.access_token;
+
+    if (newAccessToken) {
+      localStorage.setItem('access_token', newAccessToken);
+      localStorage.setItem('mi_app_token', newAccessToken);
+      return newAccessToken;
+    }
+
+    return null;
+  } catch (error) {
+    // Si el refresh falla, limpiar tokens y redirigir al login
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    localStorage.removeItem('mi_app_token');
+    window.location.href = '/login';
+    return null;
+  }
+}
 
 export async function BasicPetition({
   endpoint,
@@ -16,8 +70,9 @@ export async function BasicPetition({
   data,
   headers = {},
   showNotifications = true,
+  skipRefresh = false,
 }: PetitionOptions) {
-  const token = localStorage.getItem('mi_app_token');
+  const token = localStorage.getItem('access_token') || localStorage.getItem('mi_app_token');
 
   const config: RequestInit = {
     method,
@@ -34,7 +89,58 @@ export async function BasicPetition({
 
   try {
     const response = await fetch(`${API_BASE_URL}${endpoint}`, config);
+    
+    // Verificar si la respuesta es JSON
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const textResponse = await response.text();
+      console.error('Respuesta no JSON:', textResponse);
+      throw new Error(`La respuesta del servidor no es JSON. URL: ${API_BASE_URL}${endpoint}`);
+    }
+    
     const responseData = await response.json();
+
+    // Si obtenemos 401 y no estamos en el endpoint de refresh, intentar renovar el token
+    if (response.status === 401 && !skipRefresh && endpoint !== '/auth/refresh' && endpoint !== '/auth/login') {
+      if (!isRefreshing) {
+        isRefreshing = true;
+        const newToken = await refreshAccessToken();
+        isRefreshing = false;
+
+        if (newToken) {
+          onRefreshed(newToken);
+          // Reintentar la petición original con el nuevo token
+          return BasicPetition({
+            endpoint,
+            method,
+            data,
+            headers,
+            showNotifications,
+            skipRefresh: true, // Evitar loop infinito
+          });
+        }
+      } else {
+        // Si ya se está refrescando, esperar a que termine
+        return new Promise((resolve, reject) => {
+          addRefreshSubscriber((newToken: string) => {
+            // Reintentar con el nuevo token
+            BasicPetition({
+              endpoint,
+              method,
+              data,
+              headers: {
+                ...headers,
+                Authorization: `Bearer ${newToken}`,
+              },
+              showNotifications,
+              skipRefresh: true,
+            })
+              .then(resolve)
+              .catch(reject);
+          });
+        });
+      }
+    }
 
     if (!response.ok) {
       const error: any = new Error(responseData.message || 'Error en la petición');

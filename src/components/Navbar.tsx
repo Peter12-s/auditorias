@@ -16,10 +16,16 @@ export function Navbar({ onLinkClick }: { onLinkClick?: () => void }) {
   const navigate = useNavigate();
   const isActive = (path: string) => location.pathname === path;
   
+  // Normalizar el rol para comparaciones (minúsculas y sin acentos)
+  const userRole = auth.userType?.toLowerCase() || '';
+  const isAdmin = userRole === 'admin' || userRole === 'administrador';
+  const isAuditor = userRole === 'auditor';
+  const isEmpresa = userRole === 'empresa';
+  
   return (
     <>
       {/* Menú de ADMINISTRADOR */}
-      {auth.isAuthenticated && auth.userType === 'admin' && (
+      {auth.isAuthenticated && isAdmin && (
         <>
           <NavLink
             label="Usuarios"
@@ -51,7 +57,7 @@ export function Navbar({ onLinkClick }: { onLinkClick?: () => void }) {
       )}
 
       {/* Menú de AUDITOR */}
-      {auth.isAuthenticated && auth.userType === 'auditor' && (
+      {auth.isAuthenticated && isAuditor && (
         <>
           <NavLink
             label="SGI"
@@ -74,7 +80,7 @@ export function Navbar({ onLinkClick }: { onLinkClick?: () => void }) {
       )}
 
       {/* Menú de EMPRESA */}
-      {auth.isAuthenticated && auth.userType === 'empresa' && (
+      {auth.isAuthenticated && isEmpresa && (
         <>
           <NavLink
             label="SGI"

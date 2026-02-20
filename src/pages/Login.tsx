@@ -79,7 +79,7 @@ export function Login() {
   const navigate = useNavigate();
   const auth = useAuth();
   const [loading, setLoading] = useState(false);
-  const [useMockAuth] = useState(true); // 🔄 Cambiar a false para usar API real
+  const [useMockAuth] = useState(false); // 🔄 Usar API real
 
   // Redirigir si ya está autenticado
   useEffect(() => {
@@ -254,23 +254,26 @@ export function Login() {
       });
 
       if (login.access_token) {
-        // Guardar refresh_token si existe
-        if (login.refresh_token) {
-          localStorage.setItem('mi_app_refresh_token', login.refresh_token);
-        }
-
-        // Usar 'role' y 'nombre' de la respuesta
-        const displayName = login.nombre || extractDisplayName(login);
+        // Extraer datos de la respuesta
+        const displayName = login.fullName || login.nombre || extractDisplayName(login);
         const userType = login.role || login.user_type;
         const userId = login.user_id ?? login._id ?? login.id ?? '';
         const photoUrl = login.fotoPerfil ?? login.photo ?? login.profile_photo ?? login.user?.fotoPerfil ?? login.user?.photo;
 
         saveUserData(userId, displayName, photoUrl);
 
-        auth.login(login.access_token, () => {
-          showWelcomeNotification(displayName, userType);
-          navigate('/', { replace: true });
-        }, userType, userId);
+        // Login con todos los datos separados
+        auth.login(
+          login.access_token,
+          () => {
+            showWelcomeNotification(displayName, userType);
+            navigate('/', { replace: true });
+          },
+          userType,
+          userId,
+          login.refresh_token, // refresh_token
+          displayName // fullName
+        );
       }
     } catch (err: any) {
       handleLoginError(err);
