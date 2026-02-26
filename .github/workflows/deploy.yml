@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+      - front/peter
   workflow_dispatch:
 
 permissions:
