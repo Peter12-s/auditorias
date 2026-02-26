@@ -27,9 +27,8 @@ interface LoginResponse {
   role?: UserType;
   nombre?: string;
   user_type?: UserType;
-  user_id?: string;
-  _id?: string;
-  id?: string;
+  userId?: string | number;
+
   full_name?: any;
   fullName?: any;
   user_fullname?: string;
@@ -216,10 +215,24 @@ export function Login() {
   // Manejar errores de login real
   const handleLoginError = (err: any) => {
     const errorData = err?.data || {};
-    const errorMessage = errorData?.message || err?.message || '';
+    let errorMessage = errorData?.message || err?.message || '';
     const statusCode = err?.status || err?.statusCode || 0;
 
+    // Mostrar el mensaje exacto del servidor si contiene información útil
     if (
+      errorMessage.toLowerCase().includes('bloqueada') ||
+      errorMessage.toLowerCase().includes('locked') ||
+      errorMessage.toLowerCase().includes('intenta') ||
+      errorMessage.toLowerCase().includes('try again')
+    ) {
+      // Mostrar el mensaje del servidor tal cual
+      showNotification({
+        title: 'Acceso restringido',
+        message: errorMessage,
+        color: 'orange',
+        autoClose: 5000,
+      });
+    } else if (
       statusCode === 401 ||
       errorMessage.toLowerCase().includes('password') ||
       errorMessage.toLowerCase().includes('contraseña') ||
@@ -257,8 +270,8 @@ export function Login() {
         // Extraer datos de la respuesta
         const displayName = login.fullName || login.nombre || extractDisplayName(login);
         const userType = login.role || login.user_type;
-        const userId = login.user_id ?? login._id ?? login.id ?? '';
-        const photoUrl = login.fotoPerfil ?? login.photo ?? login.profile_photo ?? login.user?.fotoPerfil ?? login.user?.photo;
+        const userId = String(login.userId ?? '');
+        const photoUrl = (login as any).photoUrl ?? login.fotoPerfil ?? login.photo ?? login.profile_photo ?? login.user?.fotoPerfil ?? login.user?.photo;
 
         saveUserData(userId, displayName, photoUrl);
 

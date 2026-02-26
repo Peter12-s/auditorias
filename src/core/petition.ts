@@ -94,7 +94,6 @@ export async function BasicPetition({
     const contentType = response.headers.get('content-type');
     if (!contentType || !contentType.includes('application/json')) {
       const textResponse = await response.text();
-      console.error('Respuesta no JSON:', textResponse);
       throw new Error(`La respuesta del servidor no es JSON. URL: ${API_BASE_URL}${endpoint}`);
     }
     
@@ -184,4 +183,28 @@ export async function BasicPetition({
     }
     throw error;
   }
+}
+
+export async function createPoint(companyUserId: number, name: string) {
+  return BasicPetition({
+    endpoint: '/templates/points',
+    method: 'POST',
+    data: {
+      companyUserId,
+      name,
+    },
+    showNotifications: true,
+  });
+}
+
+export async function createSubpoint(pointId: number, name: string, periodicity: 'monthly' | 'yearly') {
+  return BasicPetition({
+    endpoint: `/templates/points/${pointId}/subpoints`,
+    method: 'POST',
+    data: {
+      name,
+      periodicity,
+    },
+    showNotifications: true,
+  });
 }

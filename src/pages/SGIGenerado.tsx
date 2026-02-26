@@ -311,7 +311,6 @@ export function SGIGenerado() {
         color: 'green',
       });
     } catch (error) {
-      console.error('Error al generar ZIP:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo generar el archivo ZIP',

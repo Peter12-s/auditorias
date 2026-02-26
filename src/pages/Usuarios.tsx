@@ -92,12 +92,30 @@ export function Usuarios() {
   const [isEditingPhoto, setIsEditingPhoto] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const getErrorMessage = (error: any): string => {
+    const data = error?.data;
+    if (!data) return error?.message || 'Ocurrió un error inesperado.';
+
+    if (typeof data.message === 'string') return data.message;
+    if (Array.isArray(data.message)) return data.message.join(' ');
+
+    const errors = data.errors || data.error || data.details;
+    if (Array.isArray(errors)) return errors.map(String).join(' ');
+    if (typeof errors === 'string') return errors;
+
+    return error?.message || 'No se pudo completar la operación.';
+  };
+
   // 🗂️ DATOS DE USUARIOS
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
+  const usuariosCargadosRef = useRef<boolean>(false);
 
   // � CARGAR USUARIOS DESDE LA API
   useEffect(() => {
-    fetchUsers();
+    if (!usuariosCargadosRef.current) {
+      usuariosCargadosRef.current = true;
+      fetchUsers();
+    }
   }, []);
 
   const fetchUsers = async () => {
@@ -150,7 +168,6 @@ export function Usuarios() {
       // La respuesta tiene la URL en downloadUrl
       return response?.downloadUrl || null;
     } catch (error) {
-      console.log('No se pudo cargar la foto del usuario');
       return null;
     }
   };
@@ -426,16 +443,8 @@ export function Usuarios() {
       setLoading(true);
       
       try {
-        // Mapear tipo de usuario a userType numérico
-        const userTypeMap: { [key: string]: number } = {
-          'admin': 1,
-          'auditor': 2,
-          'empresa': 3,
-        };
-        
         let requestBody: any = {
           email: values.correo,
-          userType: userTypeMap[values.tipo],
         };
         
         // Solo incluir password si se proporciona uno nuevo
@@ -466,12 +475,10 @@ export function Usuarios() {
             nombre: values.nombreAuditor,
             paterno: values.apellidoPaternoAuditor,
             materno: values.apellidoMaternoAuditor,
-            telefono: values.whatsapp,
             curp: values.curp,
             rfc: values.rfcAuditor,
             nss: values.nss,
-            whatsapp: values.whatsapp,
-            contactoEmergencia: values.contactoEmergencia,
+            telefono: values.whatsapp,
           };
         }
         
@@ -492,10 +499,9 @@ export function Usuarios() {
         await fetchUsers();
         
       } catch (error) {
-        console.error('Error al actualizar usuario:', error);
         showNotification({
           title: 'Error',
-          message: 'No se pudo actualizar el usuario. Verifique los datos.',
+          message: getErrorMessage(error) || 'No se pudo actualizar el usuario. Verifique los datos.',
           color: 'red',
         });
         setLoading(false);
@@ -508,6 +514,7 @@ export function Usuarios() {
       setLoading(true);
       
       try {
+        const tipoNormalizado = String(values.tipo).toLowerCase();
         // Mapear tipo de usuario a userType numérico
         const userTypeMap: { [key: string]: number } = {
           'admin': 1,
@@ -518,10 +525,10 @@ export function Usuarios() {
         let requestBody: any = {
           email: values.correo,
           password: values.password,
-          userType: userTypeMap[values.tipo],
+          userType: userTypeMap[tipoNormalizado],
         };
         
-        if (values.tipo === 'admin') {
+        if (tipoNormalizado === 'admin') {
           requestBody = {
             ...requestBody,
             nombre: values.nombre,
@@ -529,16 +536,16 @@ export function Usuarios() {
             materno: values.apellidoMaterno,
             telefono: values.telefono,
           };
-        } else if (values.tipo === 'empresa') {
+        } else if (tipoNormalizado === 'empresa') {
           requestBody = {
             ...requestBody,
-            nombre: values.nombreEmpresa,
-            rfc: values.rfc,
-            telefono: values.telefonoEmpresa,
+            nombreEmpresa: values.nombreEmpresa,
+            rfcEmpresa: values.rfc,
+            telefonoEmpresa: values.telefonoEmpresa,
             responsableLegal: values.responsableLegal,
             subEmpresa: values.subempresa || undefined,
           };
-        } else if (values.tipo === 'auditor') {
+        } else if (tipoNormalizado === 'auditor') {
           requestBody = {
             ...requestBody,
             nombre: values.nombreAuditor,
@@ -570,10 +577,9 @@ export function Usuarios() {
         await fetchUsers();
         
       } catch (error) {
-        console.error('Error al crear usuario:', error);
         showNotification({
           title: 'Error',
-          message: 'No se pudo crear el usuario. Verifique los datos.',
+          message: getErrorMessage(error) || 'No se pudo crear el usuario. Verifique los datos.',
           color: 'red',
         });
         setLoading(false);
@@ -618,7 +624,6 @@ export function Usuarios() {
       await fetchUsers();
       
     } catch (error) {
-      console.error('Error al eliminar usuario:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo eliminar el usuario.',
@@ -708,7 +713,6 @@ export function Usuarios() {
       fetchUsers();
       
     } catch (error) {
-      console.error('Error al subir la foto:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo subir la foto. Intente nuevamente.',

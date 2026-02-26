@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Container,
   Title,
@@ -24,11 +24,14 @@ import {
   Breadcrumbs,
   Anchor,
   Pagination,
+  Loader,
+  Center,
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { showNotification } from '@mantine/notifications';
 import { FaPlus, FaEdit, FaTrash, FaChevronDown, FaCheck, FaTimes, FaFileUpload, FaSearchPlus, FaSearchMinus } from 'react-icons/fa';
 import { useAuth } from '../AuthContext';
+import { BasicPetition, createPoint, createSubpoint } from '../core/petition';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
 import { renderAsync } from 'docx-preview';
@@ -131,14 +134,25 @@ interface EmpresaGenerada {
 interface Empresa {
   id: string;
   nombre: string;
+  subEmpresa?: string;
   puntos: Punto[];
   auditoresAsignados: string[]; // IDs de auditores asignados
 }
 
 interface Auditor {
   id: string;
+  auditorUserId: number;
   nombre: string;
   correo: string;
+  email: string;
+  isActive: boolean;
+  profile?: {
+    nombre: string;
+    paterno: string;
+    materno: string;
+  };
+  assignedCompaniesCount?: number;
+  isAssignedToCompany?: boolean;
 }
 
 interface FormPunto {
@@ -234,7 +248,6 @@ export function SGI() {
         setSelectedSheet(sheetNames[0]);
       }
     } catch (error) {
-      console.error('Error al cargar Excel:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo cargar el archivo Excel',
@@ -257,7 +270,6 @@ export function SGI() {
       setExcelData(data as any[][]);
       setSelectedSheet(sheetName);
     } catch (error) {
-      console.error('Error al cambiar de hoja:', error);
     } finally {
       setLoadingExcel(false);
     }
@@ -269,7 +281,6 @@ export function SGI() {
     
     setLoadingWord(true);
     try {
-      console.log('Intentando cargar Word desde:', fileUrl);
       const response = await fetch(fileUrl);
       
       if (!response.ok) {
@@ -277,7 +288,6 @@ export function SGI() {
       }
       
       const blob = await response.blob();
-      console.log('Archivo cargado, tamaño:', blob.size, 'bytes');
       
       // Limpiar contenedor
       container.innerHTML = '';
@@ -302,7 +312,6 @@ export function SGI() {
         color: 'green',
       });
     } catch (error) {
-      console.error('Error detallado al cargar Word:', error);
       showNotification({
         title: 'Error',
         message: `No se pudo cargar el archivo Word: ${error instanceof Error ? error.message : 'Error desconocido'}`,
@@ -313,7 +322,6 @@ export function SGI() {
     }
   };
 
-  // �🗂️ DATOS MOCK DE AUDITORES (simular desde localStorage o API)
   // 🔄 useEffect para cargar archivos automáticamente
   useEffect(() => {
     if (openedViewer && viewingSubpunto?.archivoUpload && viewingSubpunto?.archivoCargado) {
@@ -339,209 +347,55 @@ export function SGI() {
     }
   }, [openedViewer, viewingSubpunto?.id, viewingSubpunto?.archivoCargado]);
 
-  const [auditores] = useState<Auditor[]>([
-    { id: '1', nombre: 'María López Martínez', correo: 'auditor@dogroup.com' },
-    { id: '2', nombre: 'Carlos Sánchez Ruiz', correo: 'carlos.auditor@dogroup.com' },
-    { id: '3', nombre: 'Ana González Torres', correo: 'ana.auditor@dogroup.com' },
-  ]);
+  const [auditores, setAuditores] = useState<Auditor[]>([]);
+  const [loadingAuditores, setLoadingAuditores] = useState(false);
+  const [empresasConDatos, setEmpresasConDatos] = useState<Set<string>>(new Set());
+  const [empresasCargando, setEmpresasCargando] = useState<Set<string>>(new Set());
 
   // 🗂️ DATOS MOCK DE EMPRESAS
-  const [empresas, setEmpresas] = useState<Empresa[]>([
-    {
-      id: '1',
-      nombre: 'GRUPO TRASNACIONAL DE INFRAESTRUCTURA',
-      auditoresAsignados: ['1', '2'],
-      puntos: [
-        {
-          id: '1-1',
-          nombre: 'Sección para punto 1',
-          subpuntos: [
-            { 
-              id: '1-1-1', 
-              nombre: 'Subpunto 1.1', 
-              periodicidad: '',
-              estado: true,
-              archivoCargado: true,
-              archivoUpload: 'sample.pdf',
-              cambios: [],
-              mensajes: [
-                {
-                  id: '1-1-1-msg-1',
-                  texto: '¿Podrían revisar el documento que acabo de subir?',
-                  fecha: '15/01/2026',
-                  hora: '10:30',
-                  usuario: 'GRUPO TRASNACIONAL',
-                  tipo: 'empresa'
-                },
-                {
-                  id: '1-1-1-msg-2',
-                  texto: 'Revisado. Todo está correcto, pueden proceder con el siguiente paso.',
-                  fecha: '15/01/2026',
-                  hora: '14:20',
-                  usuario: 'María López',
-                  tipo: 'auditor'
-                },
-                {
-                  id: '1-1-1-msg-3',
-                  texto: 'Perfecto, gracias por la confirmación.',
-                  fecha: '15/01/2026',
-                  hora: '15:45',
-                  usuario: 'GRUPO TRASNACIONAL',
-                  tipo: 'empresa'
-                },
-              ],
-            },
-            { 
-              id: '1-1-2', 
-              nombre: 'Subpunto 1.2 - Documento Word',
-              periodicidad: 'Trimestral',
-              estado: true,
-              archivoCargado: true,
-              archivoUpload: 'Prueba.docx',
-              cambios: [],
-              mensajes: [],
-            },
-            { 
-              id: '1-1-3', 
-              nombre: 'Subpunto 1.3 - Hoja de Cálculo',
-              periodicidad: 'Mensual',
-              estado: true,
-              archivoCargado: true,
-              archivoUpload: '1A1.xlsx',
-              cambios: [],
-              mensajes: [],
-            },
-          ],
-        },
-        {
-          id: '1-2',
-          nombre: 'Sección para punto 2',
-          subpuntos: [
-            { 
-              id: '1-2-1', 
-              nombre: 'Subpunto 2.1',
-              periodicidad: 'Semanal',
-              estado: true,
-              archivoCargado: true,
-              archivoUpload: 'sample.pdf',
-              cambios: [],
-              mensajes: [
-                {
-                  id: '1-2-1-msg-1',
-                  texto: 'Necesitamos actualizar este documento antes de fin de mes.',
-                  fecha: '16/01/2026',
-                  hora: '09:15',
-                  usuario: 'Carlos Sánchez',
-                  tipo: 'auditor'
-                },
-              ],
-            },
-          ],
-        },
-        {
-          id: '1-3',
-          nombre: 'Sección para punto 3',
-          subpuntos: [],
-        },
-      ],
-    },
-    {
-      id: '2',
-      nombre: 'FABRICACIÓN DE ESTRUCTURAS METALICAS MONROY',
-      auditoresAsignados: [],
-      puntos: [
-        {
-          id: '2-1',
-          nombre: 'Sección para punto 1',
-          subpuntos: [],
-        },
-      ],
-    },
-    {
-      id: '3',
-      nombre: 'SOLUCIONES INTEGRALES EN ACEROS Y PROCESOS CIVAC',
-      auditoresAsignados: ['3'],
-      puntos: [],
-    },
-    {
-      id: '4',
-      nombre: 'CONSTRUCCIONES Y DESARROLLOS DEL NORTE',
-      auditoresAsignados: ['1'],
-      puntos: [
-        {
-          id: '4-1',
-          nombre: 'Sección para punto 1',
-          subpuntos: [
-            { 
-              id: '4-1-1', 
-              nombre: 'Subpunto 1.1', 
-              periodicidad: 'Mensual',
-              estado: true,
-              archivoCargado: false,
-              cambios: [],
-              mensajes: [],
-            },
-          ],
-        },
-      ],
-    },
-    {
-      id: '5',
-      nombre: 'COMERCIALIZADORA DE PRODUCTOS INDUSTRIALES SA',
-      auditoresAsignados: [],
-      puntos: [],
-    },
-    {
-      id: '6',
-      nombre: 'DISTRIBUIDORA DE MATERIALES DE CONSTRUCCIÓN',
-      auditoresAsignados: ['2'],
-      puntos: [
-        {
-          id: '6-1',
-          nombre: 'Sección para punto 1',
-          subpuntos: [],
-        },
-      ],
-    },
-    {
-      id: '7',
-      nombre: 'TECNOLOGÍA Y SISTEMAS INTEGRADOS DEL BAJÍO',
-      auditoresAsignados: ['1', '3'],
-      puntos: [],
-    },
-    {
-      id: '8',
-      nombre: 'MANUFACTURAS ESPECIALIZADAS DE OCCIDENTE',
-      auditoresAsignados: [],
-      puntos: [],
-    },
-    {
-      id: '9',
-      nombre: 'SERVICIOS LOGÍSTICOS Y TRANSPORTES MONTERREY',
-      auditoresAsignados: ['2'],
-      puntos: [],
-    },
-    {
-      id: '10',
-      nombre: 'INGENIERÍA Y PROYECTOS ESTRATÉGICOS DEL PACÍFICO',
-      auditoresAsignados: [],
-      puntos: [],
-    },
-    {
-      id: '11',
-      nombre: 'PROCESADORA DE ALIMENTOS DEL CENTRO',
-      auditoresAsignados: ['1'],
-      puntos: [],
-    },
-    {
-      id: '12',
-      nombre: 'CONSULTORÍA EMPRESARIAL Y DESARROLLO CORPORATIVO',
-      auditoresAsignados: ['3'],
-      puntos: [],
-    },
-  ]);
+  const [empresas, setEmpresas] = useState<Empresa[]>([]);
+  const empresasCargadasRef = useRef<boolean>(false);
 
-  // 📝 FORMULARIO PARA PUNTO
+  // � CARGAR EMPRESAS DESDE API
+  useEffect(() => {
+    const loadEmpresas = async () => {
+      if (empresasCargadasRef.current) return;
+      empresasCargadasRef.current = true;
+      
+      try {
+        const response = await BasicPetition({
+          endpoint: '/templates/companies',
+          method: 'GET',
+          data: {},
+          showNotifications: false,
+        });
+        
+        
+        if (response && Array.isArray(response)) {
+          // Mapear respuesta de la API a la estructura Empresa
+          const empresasFromAPI = response.map((company: any) => ({
+            id: company.companyUserId || company.id || company._id,
+            nombre: company.profile?.nombreEmpresa || company.name || company.nombre || 'Sin nombre',
+            subEmpresa: company.profile?.subEmpresa,
+            auditoresAsignados: [],
+            puntos: [],
+          }));
+          
+          setEmpresas(empresasFromAPI);
+        }
+      } catch (error) {
+      }
+    };
+
+    const isAdmin = auth?.userType?.toLowerCase() === 'admin' || 
+                   auth?.userType === 'Administrador';
+    
+    if (isAdmin && !empresasCargadasRef.current) {
+      loadEmpresas();
+    }
+  }, [auth]);
+
+  // �📝 FORMULARIO PARA PUNTO
   const formPunto = useForm<FormPunto>({
     initialValues: {
       nombre: '',
@@ -592,7 +446,7 @@ export function SGI() {
   };
 
   // 💾 GUARDAR PUNTO
-  const handleSubmitPunto = (values: FormPunto) => {
+  const handleSubmitPunto = async (values: FormPunto) => {
     if (!selectedEmpresa) return;
 
     if (editingPunto) {
@@ -615,29 +469,29 @@ export function SGI() {
         color: 'green',
       });
     } else {
-      // Crear nuevo punto
-      setEmpresas((prev) =>
-        prev.map((empresa) =>
-          empresa.id === selectedEmpresa
-            ? {
-                ...empresa,
-                puntos: [
-                  ...empresa.puntos,
-                  {
-                    id: `${empresa.id}-${empresa.puntos.length + 1}`,
-                    nombre: values.nombre,
-                    subpuntos: [],
-                  },
-                ],
-              }
-            : empresa
-        )
-      );
-      showNotification({
-        title: 'Punto creado',
-        message: 'El punto se creó correctamente',
-        color: 'green',
-      });
+      // Crear nuevo punto con POST al API
+      try {
+        console.log('🆕 Creando punto para empresa:', selectedEmpresa);
+        const response = await createPoint(parseInt(selectedEmpresa), values.nombre);
+
+        console.log('✅ Punto creado:', response);
+
+        // Recargar puntos después de crear
+        await handleLoadPuntos(selectedEmpresa);
+
+        showNotification({
+          title: 'Punto creado',
+          message: 'El punto se creó correctamente',
+          color: 'green',
+        });
+      } catch (error) {
+        console.error('❌ Error creando punto:', error);
+        showNotification({
+          title: 'Error',
+          message: 'No se pudo crear el punto',
+          color: 'red',
+        });
+      }
     }
     setOpenedPunto(false);
     formPunto.reset();
@@ -690,7 +544,7 @@ export function SGI() {
   };
 
   // 💾 GUARDAR SUBPUNTO
-  const handleSubmitSubpunto = (values: FormSubpunto) => {
+  const handleSubmitSubpunto = async (values: FormSubpunto) => {
     if (!selectedEmpresa || !selectedPunto) return;
 
     if (editingSubpunto) {
@@ -727,40 +581,69 @@ export function SGI() {
         color: 'green',
       });
     } else {
-      // Crear nuevo subpunto
-      setEmpresas((prev) =>
-        prev.map((empresa) =>
-          empresa.id === selectedEmpresa
-            ? {
-                ...empresa,
-                puntos: empresa.puntos.map((punto) =>
-                  punto.id === selectedPunto
-                    ? {
-                        ...punto,
-                        subpuntos: [
-                          ...punto.subpuntos,
-                          {
-                            id: `${punto.id}-${punto.subpuntos.length + 1}`,
-                            nombre: values.nombre,
-                            periodicidad: values.periodicidad,
-                            estado: values.estado,
-                            archivoCargado: false,
-                            cambios: [],
-                            mensajes: [],
-                          },
-                        ],
-                      }
-                    : punto
-                ),
-              }
-            : empresa
-        )
-      );
-      showNotification({
-        title: 'Subpunto creado',
-        message: 'El subpunto se creó correctamente',
-        color: 'green',
-      });
+      // Crear nuevo subpunto con POST al API
+      try {
+        console.log('🆕 Creando subpunto para punto:', selectedPunto);
+        
+        // Mapear periodicidad a valores de API
+        const periodicityMap: { [key: string]: 'monthly' | 'yearly' } = {
+          'Mensual': 'monthly',
+          'Anual': 'yearly',
+        };
+        
+        const periodicity = periodicityMap[values.periodicidad] || 'monthly';
+        
+        const response = await createSubpoint(
+          parseInt(selectedPunto),
+          values.nombre,
+          periodicity
+        );
+
+        console.log('✅ Subpunto creado:', response);
+
+        // Actualizar estado local
+        setEmpresas((prev) =>
+          prev.map((empresa) =>
+            empresa.id === selectedEmpresa
+              ? {
+                  ...empresa,
+                  puntos: empresa.puntos.map((punto) =>
+                    punto.id === selectedPunto
+                      ? {
+                          ...punto,
+                          subpuntos: [
+                            ...punto.subpuntos,
+                            {
+                              id: String(response.subpointId || `${punto.id}-${punto.subpuntos.length + 1}`),
+                              nombre: values.nombre,
+                              periodicidad: values.periodicidad,
+                              estado: values.estado,
+                              archivoCargado: false,
+                              cambios: [],
+                              mensajes: [],
+                            },
+                          ],
+                        }
+                      : punto
+                  ),
+                }
+              : empresa
+          )
+        );
+
+        showNotification({
+          title: 'Subpunto creado',
+          message: 'El subpunto se creó correctamente',
+          color: 'green',
+        });
+      } catch (error) {
+        console.error('❌ Error creando subpunto:', error);
+        showNotification({
+          title: 'Error',
+          message: 'No se pudo crear el subpunto',
+          color: 'red',
+        });
+      }
     }
     setOpenedSubpunto(false);
     formSubpunto.reset();
@@ -797,29 +680,263 @@ export function SGI() {
     setOpenedConfirm(true);
   };
 
-  // 👥 GESTIÓN DE AUDITORES
-  const handleOpenAuditores = (empresaId: string) => {
+  // 👥 GESTIÓN DE AUDITORES - ABRIR MODAL
+  const handleOpenAuditores = async (empresaId: string) => {
+    console.log('📋 Abriendo modal de auditores para empresa:', empresaId);
     setSelectedEmpresaForAuditores(empresaId);
     setOpenedAuditores(true);
+    
+    // Cargar lista completa de auditores para el modal
+    setLoadingAuditores(true);
+    try {
+      console.log('🔄 Llamando a /templates/auditors con companyUserId:', empresaId);
+      const response = await BasicPetition({
+        endpoint: `/templates/auditors?companyUserId=${empresaId}`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+      console.log('✅ Respuesta de auditores:', response);
+
+      if (response && Array.isArray(response)) {
+        const auditoresFromAPI = response.map((auditor: any) => ({
+          id: String(auditor.auditorUserId),
+          auditorUserId: auditor.auditorUserId,
+          nombre: `${auditor.profile?.nombre || ''} ${auditor.profile?.paterno || ''} ${auditor.profile?.materno || ''}`.trim(),
+          correo: auditor.email,
+          email: auditor.email,
+          isActive: auditor.isActive,
+          profile: auditor.profile,
+          assignedCompaniesCount: auditor.assignedCompaniesCount,
+          isAssignedToCompany: auditor.isAssignedToCompany,
+        }));
+        console.log('👥 Auditores procesados:', auditoresFromAPI.length);
+        setAuditores(auditoresFromAPI);
+      }
+    } catch (error) {
+      console.error('❌ Error cargando auditores:', error);
+      showNotification({
+        title: 'Error',
+        message: 'No se pudieron cargar los auditores',
+        color: 'red',
+      });
+    } finally {
+      setLoadingAuditores(false);
+    }
   };
 
-  const handleToggleAuditor = (auditorId: string) => {
+  // � CARGAR AUDITORES PARA UNA EMPRESA (sin abrir modal)
+  const handleLoadAuditores = async (empresaId: string) => {
+    console.log('👥 Cargando auditores para empresa:', empresaId);
+    try {
+      const response = await BasicPetition({
+        endpoint: `/templates/auditors?companyUserId=${empresaId}`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+      if (response && Array.isArray(response)) {
+        // Mapear datos completos de los auditores
+        const auditoresCompletos = response.map((auditor: any) => ({
+          id: String(auditor.auditorUserId),
+          auditorUserId: auditor.auditorUserId,
+          nombre: `${auditor.profile?.nombre || ''} ${auditor.profile?.paterno || ''} ${auditor.profile?.materno || ''}`.trim(),
+          correo: auditor.email,
+          email: auditor.email,
+          isActive: auditor.isActive,
+          profile: auditor.profile,
+          assignedCompaniesCount: auditor.assignedCompaniesCount,
+          isAssignedToCompany: auditor.isAssignedToCompany,
+        }));
+
+        // Guardar datos completos en el estado global de auditores, evitando duplicados
+        setAuditores((prev) => {
+          const auditoresMap = new Map(prev.map(a => [a.id, a]));
+          auditoresCompletos.forEach(auditor => {
+            auditoresMap.set(auditor.id, auditor);
+          });
+          return Array.from(auditoresMap.values());
+        });
+
+        // Filtrar solo los IDs de los auditores asignados
+        const auditoresAsignados = response
+          .filter((auditor: any) => auditor.isAssignedToCompany)
+          .map((auditor: any) => String(auditor.auditorUserId));
+        
+        console.log('✅ Auditores asignados:', auditoresAsignados.length);
+
+        // Actualizar el estado de empresas con los auditores asignados
+        setEmpresas((prev) =>
+          prev.map((emp) =>
+            emp.empresaId === empresaId || emp.id === empresaId
+              ? { ...emp, auditoresAsignados }
+              : emp
+          )
+        );
+      }
+    } catch (error) {
+      console.error('❌ Error cargando auditores:', error);
+    }
+  };
+
+  // � CARGAR DATOS DE EMPRESA (puntos y auditores al expandir)
+  const handleLoadEmpresaData = async (empresaId: string) => {
+    // Si ya tiene datos cargados, no volver a cargar
+    if (empresasConDatos.has(empresaId)) {
+      console.log('✅ Empresa ya tiene datos cargados:', empresaId);
+      return;
+    }
+
+    console.log('🔄 Cargando datos completos para empresa:', empresaId);
+
+    // Marcar empresa como cargando
+    setEmpresasCargando((prev) => new Set([...prev, empresaId]));
+
+    try {
+      // Cargar en paralelo puntos y auditores
+      await Promise.all([
+        handleLoadPuntos(empresaId),
+        handleLoadAuditores(empresaId)
+
+      ]);
+
+      // Marcar empresa como cargada
+      setEmpresasConDatos((prev) => new Set([...prev, empresaId]));
+      console.log('✅ Datos completos cargados para empresa:', empresaId);
+    } catch (error) {
+      console.error('❌ Error cargando datos de empresa:', error);
+    } finally {
+      // Quitar empresa de la lista de cargando
+      setEmpresasCargando((prev) => {
+        const newSet = new Set(prev);
+        newSet.delete(empresaId);
+        return newSet;
+      });
+    }
+  };
+
+
+  // 🏗️ CARGAR SUBPUNTOS DE UN PUNTO
+  const handleLoadSubpoints = async (pointId: string) => {
+    try {
+      const response = await BasicPetition({
+        endpoint: `/templates/points/${pointId}/subpoints`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+      console.log('✅ Subpuntos cargados para punto:', pointId, response);
+
+      return Array.isArray(response) ? response : [];
+    } catch (error) {
+      console.error('❌ Error cargando subpuntos para punto:', pointId, error);
+      return [];
+    }
+  };
+  // �📋 CARGAR PUNTOS DE UNA EMPRESA
+  const handleLoadPuntos = async (empresaId: string) => {
+    console.log('📋 Cargando puntos para empresa:', empresaId);
+    try {
+      const response = await BasicPetition({
+        endpoint: `/templates/companies/${empresaId}/points`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+      console.log('✅ Respuesta de puntos:', response);
+
+      if (response && Array.isArray(response)) {
+        // Cargar subpuntos para cada punto en paralelo
+        const puntosWithSubpoints = await Promise.all(
+          response.map(async (punto: any) => {
+            const pointId = String(punto.pointId || punto.id);
+            const subpuntosFromAPI = await handleLoadSubpoints(pointId);
+            
+            return {
+              id: pointId,
+              nombre: punto.nombre || punto.name,
+              subpuntos: Array.isArray(subpuntosFromAPI)
+                ? subpuntosFromAPI.map((sub: any) => ({
+                    id: String(sub.subpointId || sub.id),
+                    nombre: sub.nombre || sub.name,
+                    periodicidad: sub.periodicidad || sub.periodicity || 'Mensual',
+                    archivoUpload: sub.archivoUpload || '',
+                    estado: sub.estado !== false,
+                    archivoCargado: !!sub.archivoUpload,
+                    cambios: [],
+                    mensajes: [],
+                  }))
+                : [],
+            };
+          })
+        );
+
+        console.log('📋 Puntos con subpuntos procesados:', puntosWithSubpoints.length);
+
+        // Actualizar empresa con los puntos y subpuntos cargados
+        setEmpresas((prev) =>
+          prev.map((emp) =>
+            emp.id === empresaId || emp.empresaId === empresaId
+              ? { ...emp, puntos: puntosWithSubpoints }
+              : emp
+          )
+        );
+      }
+    } catch (error) {
+      console.error('❌ Error cargando puntos:', error);
+    }
+  };
+
+  const handleToggleAuditor = async (auditorId: string) => {
     if (!selectedEmpresaForAuditores) return;
 
-    setEmpresas((prev) =>
-      prev.map((empresa) => {
-        if (empresa.id === selectedEmpresaForAuditores) {
-          const isAssigned = empresa.auditoresAsignados.includes(auditorId);
-          return {
-            ...empresa,
-            auditoresAsignados: isAssigned
-              ? empresa.auditoresAsignados.filter((id) => id !== auditorId)
-              : [...empresa.auditoresAsignados, auditorId],
-          };
-        }
-        return empresa;
-      })
-    );
+    try {
+      console.log('🔄 Asignando auditor:', {
+        auditorUserId: Number(auditorId),
+        companyUserId: Number(selectedEmpresaForAuditores)
+      });
+
+      await BasicPetition({
+        endpoint: '/templates/auditor-company-assignments',
+        method: 'POST',
+        data: {
+          auditorUserId: Number(auditorId),
+          companyUserId: Number(selectedEmpresaForAuditores)
+        },
+        showNotifications: false,
+      });
+
+      console.log('✅ Auditor asignado correctamente');
+
+      // Actualizar estado local
+      setEmpresas((prev) =>
+        prev.map((empresa) => {
+          if (empresa.id === selectedEmpresaForAuditores) {
+            const isAssigned = empresa.auditoresAsignados.includes(auditorId);
+            return {
+              ...empresa,
+              auditoresAsignados: isAssigned
+                ? empresa.auditoresAsignados.filter((id) => id !== auditorId)
+                : [...empresa.auditoresAsignados, auditorId],
+            };
+          }
+          return empresa;
+        })
+      );
+
+      showNotification({
+        title: 'Asignación actualizada',
+        message: 'El auditor se asignó correctamente',
+        color: 'green',
+      });
+    } catch (error) {
+      console.error('❌ Error asignando auditor:', error);
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo asignar el auditor',
+        color: 'red',
+      });
+    }
   };
 
   // 📅 ACTUALIZAR PERIODICIDAD
@@ -1182,7 +1299,6 @@ export function SGI() {
     if (!file) return;
 
     // Aquí iría la lógica real de subida
-    console.log('Cargando archivo para periodo:', { empresaId, puntoId, subpuntoId, periodoId, file: file.name });
 
     showNotification({
       title: 'Archivo cargado',
@@ -1277,9 +1393,10 @@ export function SGI() {
           return (
             <Paper key={empresa.id} shadow="sm" p="md" radius="md" withBorder>
               <Accordion>
-                <Accordion.Item value={empresa.id}>
+                <Accordion.Item value={String(empresa.id)}>
                   <Accordion.Control
                     icon={<FaChevronDown size={14} />}
+                    onClick={() => handleLoadEmpresaData(empresa.empresaId || empresa.id)}
                     styles={{
                       control: {
                         fontSize: '1.1rem',
@@ -1287,17 +1404,20 @@ export function SGI() {
                       },
                     }}
                   >
+                  
                     <Stack gap="xs" style={{ flex: 1 }}>
                       <Group justify="space-between" wrap="nowrap">
                         <Text fw={600}>{empresa.nombre}</Text>
-                        <Group gap="xs">
-                          <Badge color="teal" size="lg" variant="light">
-                            👥 {empresa.auditoresAsignados.length} {empresa.auditoresAsignados.length === 1 ? 'auditor' : 'auditores'}
-                          </Badge>
-                          <Badge color="blue" size="lg">
-                            {empresa.puntos.length} {empresa.puntos.length === 1 ? 'punto' : 'puntos'}
-                          </Badge>
-                        </Group>
+                        {empresasConDatos.has(empresa.empresaId || empresa.id) && (
+                          <Group gap="xs">
+                            <Badge color="teal" size="lg" variant="light">
+                              👥 {empresa.auditoresAsignados.length} {empresa.auditoresAsignados.length === 1 ? 'auditor' : 'auditores'}
+                            </Badge>
+                            <Badge color="blue" size="lg">
+                              {empresa.puntos.length} {empresa.puntos.length === 1 ? 'punto' : 'puntos'}
+                            </Badge>
+                          </Group>
+                        )}
                       </Group>
                       {totalSubpuntos > 0 && (
                         <Box>
@@ -1325,6 +1445,15 @@ export function SGI() {
                   </Accordion.Control>
 
                 <Accordion.Panel>
+                  {empresasCargando.has(empresa.empresaId || empresa.id) ? (
+                    <Center py="xl">
+                      <Stack align="center" gap="md">
+                        <Loader size="lg" color="#a1a23b" />
+                        <Text size="sm" c="dimmed">Cargando información de la empresa...</Text>
+                      </Stack>
+                    </Center>
+                  ) : (
+                    <>
                   {/* AUDITORES ASIGNADOS Y BOTONES */}
                   <Paper p="md" mb="md" withBorder style={{ backgroundColor: '#f8f9fa' }}>
                     <Group justify="space-between" align="center">
@@ -1345,7 +1474,7 @@ export function SGI() {
                           </Group>
                         )}
                       </Stack>
-                      {auth.userType === 'admin' && (
+                      {auth.userType === 'Administrador' && (
                         <Button
                           size="sm"
                           variant="light"
@@ -1526,6 +1655,8 @@ export function SGI() {
                       ))}
                     </Stack>
                   )}
+                    </>
+                  )}
                 </Accordion.Panel>
               </Accordion.Item>
             </Accordion>
@@ -1633,10 +1764,6 @@ export function SGI() {
               {...formSubpunto.getInputProps('periodicidad')}
             />
 
-            <Switch
-              label="¿Empresa sube archivos?"
-              {...formSubpunto.getInputProps('estado', { type: 'checkbox' })}
-            />
 
             <Group justify="flex-end" mt="md">
               <Button
@@ -2370,7 +2497,11 @@ export function SGI() {
             size="sm"
           />
 
-          {auditores.length === 0 ? (
+          {loadingAuditores ? (
+            <Text c="dimmed" ta="center" py="xl">
+              Cargando auditores...
+            </Text>
+          ) : auditores.length === 0 ? (
             <Text c="dimmed" ta="center" py="xl">
               No hay auditores registrados en el sistema
             </Text>
