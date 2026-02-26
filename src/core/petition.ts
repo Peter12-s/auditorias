@@ -93,7 +93,7 @@ export async function BasicPetition({
     // Verificar si la respuesta es JSON
     const contentType = response.headers.get('content-type');
     if (!contentType || !contentType.includes('application/json')) {
-      const textResponse = await response.text();
+      await response.text();
       throw new Error(`La respuesta del servidor no es JSON. URL: ${API_BASE_URL}${endpoint}`);
     }
     

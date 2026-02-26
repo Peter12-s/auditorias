@@ -1,10 +1,10 @@
-import { AppShell, Burger, Group, Text, Avatar, Modal, Stack, Button, FileInput, Box } from '@mantine/core';
+import { AppShell, Burger, Group, Text, Avatar, Modal, Stack, Button, Box } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { Outlet } from 'react-router-dom';
 import { Navbar } from './Navbar';
 import logoDoGroup from '../assets/logoG.png';
 import { useState, useEffect, useRef } from 'react';
-import { FaBuilding, FaUserShield, FaClipboardCheck, FaUser, FaEdit, FaCamera } from 'react-icons/fa';
+import { FaBuilding, FaUserShield, FaClipboardCheck, FaUser, FaEdit } from 'react-icons/fa';
 import { showNotification } from '@mantine/notifications';
 
 export function AppLayout() {

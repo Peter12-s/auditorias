@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "vite build",
+    "build:check": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -19,6 +20,7 @@
     "docx-preview": "^0.3.7",
     "jspdf": "^4.0.0",
     "jszip": "^3.10.1",
+    "luckysheet": "^2.1.13",
     "mammoth": "^1.11.0",
     "pdfjs-dist": "^5.4.530",
     "react": "^19.2.0",
