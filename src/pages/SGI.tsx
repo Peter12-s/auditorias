@@ -1638,7 +1638,7 @@ export function SGI() {
                               )}
 
                               {/* BOTONES DE ACCIÓN DEL PUNTO */}
-                              <Group justify="space-between" gap={8}>
+                              <Group justify="flex-start" gap={8}>
                                 {auth.userType !== 'empresa' && (
                                   <Button
                                     size="xs"
@@ -1646,7 +1646,6 @@ export function SGI() {
                                     color="blue"
                                     onClick={() => handleEditPunto(empresa.id, punto)}
                                     leftSection={<FaEdit size={12} />}
-                                    fullWidth
                                   >
                                     Editar
                                   </Button>
