@@ -371,6 +371,11 @@ export function SGI() {
     return map[periodicidad] || 'monthly';
   };
 
+  const [auditores, setAuditores] = useState<Auditor[]>([]);
+  const [loadingAuditores, setLoadingAuditores] = useState(false);
+  const [empresasConDatos, setEmpresasConDatos] = useState<Set<string>>(new Set());
+  const [empresasCargando, setEmpresasCargando] = useState<Set<string>>(new Set());
+
   // 🗂️ DATOS MOCK DE EMPRESAS
   const [empresas, setEmpresas] = useState<Empresa[]>([]);
   const empresasCargadasRef = useRef<boolean>(false);
