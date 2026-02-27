@@ -208,3 +208,28 @@ export async function createSubpoint(pointId: number, name: string, periodicity:
     showNotifications: true,
   });
 }
+
+export async function updatePoint(pointId: number, name: string) {
+  return BasicPetition({
+    endpoint: `/templates/points/${pointId}`,
+    method: 'PATCH',
+    data: {
+      name,
+    },
+    showNotifications: true,
+  });
+}
+
+export async function updateSubpoint(subpointId: number, name: string, periodicity?: 'monthly' | 'yearly') {
+  const data: any = { name };
+  if (periodicity) {
+    data.periodicity = periodicity;
+  }
+  
+  return BasicPetition({
+    endpoint: `/templates/subpoints/${subpointId}`,
+    method: 'PATCH',
+    data,
+    showNotifications: true,
+  });
+}

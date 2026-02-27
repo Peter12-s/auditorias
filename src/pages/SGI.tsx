@@ -31,7 +31,7 @@ import { useForm } from '@mantine/form';
 import { showNotification } from '@mantine/notifications';
 import { FaPlus, FaEdit, FaTrash, FaChevronDown, FaCheck, FaTimes, FaFileUpload, FaSearchPlus, FaSearchMinus } from 'react-icons/fa';
 import { useAuth } from '../AuthContext';
-import { BasicPetition, createPoint, createSubpoint } from '../core/petition';
+import { BasicPetition, createPoint, createSubpoint, updatePoint, updateSubpoint } from '../core/petition';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
 import { renderAsync } from 'docx-preview';
@@ -445,29 +445,40 @@ export function SGI() {
     setOpenedPunto(true);
   };
 
-  // 💾 GUARDAR PUNTO
   const handleSubmitPunto = async (values: FormPunto) => {
     if (!selectedEmpresa) return;
 
     if (editingPunto) {
-      // Editar punto existente
-      setEmpresas((prev) =>
-        prev.map((empresa) =>
-          empresa.id === selectedEmpresa
-            ? {
-                ...empresa,
-                puntos: empresa.puntos.map((p) =>
-                  p.id === editingPunto.punto.id ? { ...p, nombre: values.nombre } : p
-                ),
-              }
-            : empresa
-        )
-      );
-      showNotification({
-        title: 'Punto actualizado',
-        message: 'El punto se actualizó correctamente',
-        color: 'green',
-      });
+      // Editar punto existente con PATCH
+      try {
+        console.log('✏️ Actualizando punto:', editingPunto.punto.id);
+        await updatePoint(parseInt(editingPunto.punto.id), values.nombre);
+
+        setEmpresas((prev) =>
+          prev.map((empresa) =>
+            empresa.id === selectedEmpresa
+              ? {
+                  ...empresa,
+                  puntos: empresa.puntos.map((p) =>
+                    p.id === editingPunto.punto.id ? { ...p, nombre: values.nombre } : p
+                  ),
+                }
+              : empresa
+          )
+        );
+        showNotification({
+          title: 'Punto actualizado',
+          message: 'El punto se actualizó correctamente',
+          color: 'green',
+        });
+      } catch (error) {
+        console.error('❌ Error actualizando punto:', error);
+        showNotification({
+          title: 'Error',
+          message: 'No se pudo actualizar el punto',
+          color: 'red',
+        });
+      }
     } else {
       // Crear nuevo punto con POST al API
       try {
@@ -547,51 +558,67 @@ export function SGI() {
   const handleSubmitSubpunto = async (values: FormSubpunto) => {
     if (!selectedEmpresa || !selectedPunto) return;
 
+    // Mapear periodicidad a valores de API
+    const periodicityMap: { [key: string]: 'monthly' | 'yearly' } = {
+      'Mensual': 'monthly',
+      'Anual': 'yearly',
+    };
+    
+    const periodicity = periodicityMap[values.periodicidad] || 'monthly';
+
     if (editingSubpunto) {
-      // Editar subpunto existente
-      setEmpresas((prev) =>
-        prev.map((empresa) =>
-          empresa.id === selectedEmpresa
-            ? {
-                ...empresa,
-                puntos: empresa.puntos.map((punto) =>
-                  punto.id === selectedPunto
-                    ? {
-                        ...punto,
-                        subpuntos: punto.subpuntos.map((sp) =>
-                          sp.id === editingSubpunto.subpunto.id
-                            ? { 
-                                ...sp, 
-                                nombre: values.nombre,
-                                periodicidad: values.periodicidad,
-                                estado: values.estado,
-                              }
-                            : sp
-                        ),
-                      }
-                    : punto
-                ),
-              }
-            : empresa
-        )
-      );
-      showNotification({
-        title: 'Subpunto actualizado',
-        message: 'El subpunto se actualizó correctamente',
-        color: 'green',
-      });
+      // Editar subpunto existente con PATCH
+      try {
+        console.log('✏️ Actualizando subpunto:', editingSubpunto.subpunto.id);
+        await updateSubpoint(
+          parseInt(editingSubpunto.subpunto.id),
+          values.nombre,
+          periodicity
+        );
+
+        setEmpresas((prev) =>
+          prev.map((empresa) =>
+            empresa.id === selectedEmpresa
+              ? {
+                  ...empresa,
+                  puntos: empresa.puntos.map((punto) =>
+                    punto.id === selectedPunto
+                      ? {
+                          ...punto,
+                          subpuntos: punto.subpuntos.map((sp) =>
+                            sp.id === editingSubpunto.subpunto.id
+                              ? { 
+                                  ...sp, 
+                                  nombre: values.nombre,
+                                  periodicidad: values.periodicidad,
+                                  estado: values.estado,
+                                }
+                              : sp
+                          ),
+                        }
+                      : punto
+                  ),
+                }
+              : empresa
+          )
+        );
+        showNotification({
+          title: 'Subpunto actualizado',
+          message: 'El subpunto se actualizó correctamente',
+          color: 'green',
+        });
+      } catch (error) {
+        console.error('❌ Error actualizando subpunto:', error);
+        showNotification({
+          title: 'Error',
+          message: 'No se pudo actualizar el subpunto',
+          color: 'red',
+        });
+      }
     } else {
       // Crear nuevo subpunto con POST al API
       try {
         console.log('🆕 Creando subpunto para punto:', selectedPunto);
-        
-        // Mapear periodicidad a valores de API
-        const periodicityMap: { [key: string]: 'monthly' | 'yearly' } = {
-          'Mensual': 'monthly',
-          'Anual': 'yearly',
-        };
-        
-        const periodicity = periodicityMap[values.periodicidad] || 'monthly';
         
         const response = await createSubpoint(
           parseInt(selectedPunto),
@@ -940,40 +967,64 @@ export function SGI() {
   };
 
   // 📅 ACTUALIZAR PERIODICIDAD
-  const handleUpdatePeriodicidad = () => {
+  const handleUpdatePeriodicidad = async () => {
     if (!viewingSubpunto || !viewingContext) return;
 
-    setEmpresas((prev) =>
-      prev.map((empresa) => {
-        if (empresa.nombre === viewingContext.empresa) {
-          return {
-            ...empresa,
-            puntos: empresa.puntos.map((punto) => {
-              if (punto.nombre === viewingContext.punto) {
-                return {
-                  ...punto,
-                  subpuntos: punto.subpuntos.map((sp) =>
-                    sp.id === viewingSubpunto.id
-                      ? { ...sp, periodicidad: tempPeriodicidad }
-                      : sp
-                  ),
-                };
-              }
-              return punto;
-            }),
-          };
-        }
-        return empresa;
-      })
-    );
+    try {
+      // Mapear periodicidad a valores de API
+      const periodicityMap: { [key: string]: 'monthly' | 'yearly' } = {
+        'Mensual': 'monthly',
+        'Anual': 'yearly',
+      };
+      
+      const periodicity = periodicityMap[tempPeriodicidad] || 'monthly';
+      
+      console.log('📅 Actualizando periodicidad del subpunto:', {
+        subpointId: viewingSubpunto.id,
+        periodicity: periodicity
+      });
 
-    setViewingSubpunto((prev) => prev ? { ...prev, periodicidad: tempPeriodicidad } : null);
-    setEditingPeriodicidad(false);
-    showNotification({
-      title: 'Periodicidad actualizada',
-      message: 'La periodicidad se actualizó correctamente',
-      color: 'green',
-    });
+      await updateSubpoint(parseInt(viewingSubpunto.id), viewingSubpunto.nombre, periodicity);
+
+      setEmpresas((prev) =>
+        prev.map((empresa) => {
+          if (empresa.nombre === viewingContext.empresa) {
+            return {
+              ...empresa,
+              puntos: empresa.puntos.map((punto) => {
+                if (punto.nombre === viewingContext.punto) {
+                  return {
+                    ...punto,
+                    subpuntos: punto.subpuntos.map((sp) =>
+                      sp.id === viewingSubpunto.id
+                        ? { ...sp, periodicidad: tempPeriodicidad }
+                        : sp
+                    ),
+                  };
+                }
+                return punto;
+              }),
+            };
+          }
+          return empresa;
+        })
+      );
+
+      setViewingSubpunto((prev) => prev ? { ...prev, periodicidad: tempPeriodicidad } : null);
+      setEditingPeriodicidad(false);
+      showNotification({
+        title: 'Periodicidad actualizada',
+        message: 'La periodicidad se actualizó correctamente',
+        color: 'green',
+      });
+    } catch (error) {
+      console.error('❌ Error actualizando periodicidad:', error);
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo actualizar la periodicidad',
+        color: 'red',
+      });
+    }
   };
 
   // 📎 MANEJAR SUBIDA DE ARCHIVO
