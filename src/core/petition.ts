@@ -11,7 +11,7 @@ interface PetitionOptions {
 
 // En desarrollo, usa el proxy de Vite apuntando a /api
 // En producción, usa la variable de entorno o la URL completa
-const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? '/api' : 'http://localhost:3000/api');
+const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? '/api' : 'https://sgi-gservice-708746088485.us-central1.run.app/api');
 let isRefreshing = false;
 let refreshSubscribers: ((token: string) => void)[] = [];
 
