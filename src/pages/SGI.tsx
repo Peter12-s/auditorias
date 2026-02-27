@@ -347,10 +347,29 @@ export function SGI() {
     }
   }, [openedViewer, viewingSubpunto?.id, viewingSubpunto?.archivoCargado]);
 
-  const [auditores, setAuditores] = useState<Auditor[]>([]);
-  const [loadingAuditores, setLoadingAuditores] = useState(false);
-  const [empresasConDatos, setEmpresasConDatos] = useState<Set<string>>(new Set());
-  const [empresasCargando, setEmpresasCargando] = useState<Set<string>>(new Set());
+  // Función para mapear periodicidad del backend a UI
+  const mapPeriodicityToUI = (periodicity: string | undefined): string => {
+    if (!periodicity) return 'Mensual';
+    const map: { [key: string]: string } = {
+      'monthly': 'Mensual',
+      'yearly': 'Anual',
+      'weekly': 'Semanal',
+      'Mensual': 'Mensual',
+      'Anual': 'Anual',
+      'Semanal': 'Semanal',
+    };
+    return map[periodicity.toLowerCase()] || 'Mensual';
+  };
+
+  // Función para mapear periodicidad de UI a backend
+  const mapPeriodicityToAPI = (periodicidad: string): 'monthly' | 'yearly' => {
+    const map: { [key: string]: 'monthly' | 'yearly' } = {
+      'Mensual': 'monthly',
+      'Anual': 'yearly',
+      'Semanal': 'monthly', // Default a monthly si es semanal
+    };
+    return map[periodicidad] || 'monthly';
+  };
 
   // 🗂️ DATOS MOCK DE EMPRESAS
   const [empresas, setEmpresas] = useState<Empresa[]>([]);
@@ -559,12 +578,7 @@ export function SGI() {
     if (!selectedEmpresa || !selectedPunto) return;
 
     // Mapear periodicidad a valores de API
-    const periodicityMap: { [key: string]: 'monthly' | 'yearly' } = {
-      'Mensual': 'monthly',
-      'Anual': 'yearly',
-    };
-    
-    const periodicity = periodicityMap[values.periodicidad] || 'monthly';
+    const periodicity = mapPeriodicityToAPI(values.periodicidad);
 
     if (editingSubpunto) {
       // Editar subpunto existente con PATCH
@@ -886,7 +900,7 @@ export function SGI() {
                 ? subpuntosFromAPI.map((sub: any) => ({
                     id: String(sub.subpointId || sub.id),
                     nombre: sub.nombre || sub.name,
-                    periodicidad: sub.periodicidad || sub.periodicity || 'Mensual',
+                    periodicidad: mapPeriodicityToUI(sub.periodicidad || sub.periodicity),
                     archivoUpload: sub.archivoUpload || '',
                     estado: sub.estado !== false,
                     archivoCargado: !!sub.archivoUpload,
@@ -972,12 +986,7 @@ export function SGI() {
 
     try {
       // Mapear periodicidad a valores de API
-      const periodicityMap: { [key: string]: 'monthly' | 'yearly' } = {
-        'Mensual': 'monthly',
-        'Anual': 'yearly',
-      };
-      
-      const periodicity = periodicityMap[tempPeriodicidad] || 'monthly';
+      const periodicity = mapPeriodicityToAPI(tempPeriodicidad);
       
       console.log('📅 Actualizando periodicidad del subpunto:', {
         subpointId: viewingSubpunto.id,
