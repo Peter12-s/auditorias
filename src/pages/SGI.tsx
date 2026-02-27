@@ -1669,106 +1669,91 @@ export function SGI() {
                                 </Box>
                               )}
 
-                              {/* SUBPUNTOS - ACCORDION */}
+                              {/* SUBPUNTOS - ACCORDION GRUPAL */}
                               {punto.subpuntos.length > 0 ? (
                                 <Accordion 
                                   chevronPosition="right"
                                   defaultValue={null}
-                                  styles={{
-                                    chevron: {
-                                      fontSize: 14,
-                                      marginRight: 0,
-                                    }
-                                  }}
                                 >
-                                  {punto.subpuntos.map((subpunto) => (
-                                    <Accordion.Item 
-                                      key={subpunto.id}
-                                      value={subpunto.id}
-                                      style={{
-                                        backgroundColor: '#f5f7d0',
-                                        border: '1px solid #e0e3a8',
-                                        marginBottom: 8,
-                                        borderRadius: 6,
-                                      }}
-                                    >
-                                      <Accordion.Control 
-                                        style={{
-                                          padding: '10px 12px',
-                                        }}
-                                      >
-                                        <Group justify="space-between" style={{ flex: 1 }} gap={8}>
-                                          <Stack gap={4} style={{ flex: 1 }}>
-                                            <Group gap={8}>
-                                              <Text size="sm" fw={600}>{subpunto.nombre}</Text>
-                                              <Badge 
-                                                size="xs" 
-                                                color={subpunto.archivoCargado ? 'green' : 'gray'}
-                                                leftSection={subpunto.archivoCargado ? <FaCheck size={10} /> : <FaTimes size={10} />}
-                                              >
-                                                {subpunto.archivoCargado ? 'Con archivo' : 'Sin archivo'}
-                                              </Badge>
+                                  <Accordion.Item value="subpuntos">
+                                    <Accordion.Control>
+                                      <Text fw={500} size="sm">
+                                        Subpuntos ({punto.subpuntos.length})
+                                      </Text>
+                                    </Accordion.Control>
+                                    <Accordion.Panel>
+                                      <Stack gap="xs">
+                                        {punto.subpuntos.map((subpunto) => (
+                                          <Paper
+                                            key={subpunto.id}
+                                            p="sm"
+                                            radius="md"
+                                            style={{
+                                              backgroundColor: '#f5f7d0',
+                                              border: '1px solid #e0e3a8',
+                                            }}
+                                          >
+                                            <Group justify="space-between" gap={8}>
+                                              <Stack gap={4} style={{ flex: 1 }}>
+                                                <Group gap={8}>
+                                                  <Text size="sm" fw={600}>{subpunto.nombre}</Text>
+                                                  <Badge 
+                                                    size="xs" 
+                                                    color={subpunto.archivoCargado ? 'green' : 'gray'}
+                                                    leftSection={subpunto.archivoCargado ? <FaCheck size={10} /> : <FaTimes size={10} />}
+                                                  >
+                                                    {subpunto.archivoCargado ? 'Con archivo' : 'Sin archivo'}
+                                                  </Badge>
+                                                </Group>
+                                                <Text size="xs" c="dimmed">
+                                                  Periodicidad: {subpunto.periodicidad}
+                                                </Text>
+                                              </Stack>
+
+                                              {/* BOTONES DE ACCIÓN */}
+                                              <Group gap={6} wrap="nowrap">
+                                                <Button
+                                                  size="xs"
+                                                  variant="light"
+                                                  color="#a1a23b"
+                                                  onClick={() => {
+                                                    setViewingSubpunto(subpunto);
+                                                    setViewingContext({ empresa: empresa.nombre, punto: punto.nombre });
+                                                    setOpenedViewer(true);
+                                                  }}
+                                                  leftSection={<FaEye size={12} />}
+                                                >
+                                                  Ver
+                                                </Button>
+                                                {auth.userType !== 'empresa' && (
+                                                  <Button
+                                                    size="xs"
+                                                    variant="light"
+                                                    color="blue"
+                                                    onClick={() => handleEditSubpunto(empresa.id, punto.id, subpunto)}
+                                                    leftSection={<FaEdit size={12} />}
+                                                  >
+                                                    Editar
+                                                  </Button>
+                                                )}
+                                                {auth.userType === 'admin' && (
+                                                  <Button
+                                                    size="xs"
+                                                    variant="light"
+                                                    color="red"
+                                                    onClick={() => handleDeleteSubpunto(empresa.id, punto.id, subpunto.id)}
+                                                    leftSection={<FaTrash size={12} />}
+                                                  >
+                                                    Eliminar
+                                                  </Button>
+                                                )}
+                                              </Group>
                                             </Group>
-                                            <Text size="xs" c="dimmed">
-                                              Periodicidad: {subpunto.periodicidad}
-                                            </Text>
-                                          </Stack>
-
-                                          {/* BOTONES DE ACCIÓN EN HEADER */}
-                                          <Group gap={6} wrap="nowrap" style={{ marginLeft: 'auto' }}>
-                                            <Button
-                                              size="xs"
-                                              variant="light"
-                                              color="#a1a23b"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                setViewingSubpunto(subpunto);
-                                                setViewingContext({ empresa: empresa.nombre, punto: punto.nombre });
-                                                setOpenedViewer(true);
-                                              }}
-                                              leftSection={<FaEye size={12} />}
-                                            >
-                                              Ver
-                                            </Button>
-                                            {auth.userType !== 'empresa' && (
-                                              <Button
-                                                size="xs"
-                                                variant="light"
-                                                color="blue"
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  handleEditSubpunto(empresa.id, punto.id, subpunto);
-                                                }}
-                                                leftSection={<FaEdit size={12} />}
-                                              >
-                                                Editar
-                                              </Button>
-                                            )}
-                                            {auth.userType === 'admin' && (
-                                              <Button
-                                                size="xs"
-                                                variant="light"
-                                                color="red"
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  handleDeleteSubpunto(empresa.id, punto.id, subpunto.id);
-                                                }}
-                                                leftSection={<FaTrash size={12} />}
-                                              >
-                                                Eliminar
-                                              </Button>
-                                            )}
-                                          </Group>
-                                        </Group>
-                                      </Accordion.Control>
-
-                                      <Accordion.Panel style={{ padding: '12px' }}>
-                                        <Text size="sm" c="dimmed">
-                                          Subpunto cargado y listo para revisar. Usa el botón "Ver" para consultar los detalles.
-                                        </Text>
-                                      </Accordion.Panel>
-                                    </Accordion.Item>
-                                  ))}
+                                          </Paper>
+                                        ))}
+                                      </Stack>
+                                    </Accordion.Panel>
+                                  </Accordion.Item>
                                 </Accordion>
                               ) : (
                                 <Text c="dimmed" size="sm" ta="center" py="md">
