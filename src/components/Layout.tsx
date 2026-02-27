@@ -150,7 +150,7 @@ export function AppLayout() {
       formData.append('file', photoFile);
 
       // Subir la foto a la API
-      const response = await fetch(`/api/users/${userId}/photo`, {
+      const response = await fetch(`/users/${userId}/photo`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('access_token') || localStorage.getItem('mi_app_token')}`,

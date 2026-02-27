@@ -9,9 +9,9 @@ interface PetitionOptions {
   skipRefresh?: boolean; // Para evitar loops infinitos en refresh
 }
 
-// En desarrollo, usa el proxy de Vite apuntando a /api
-// En producción, usa la variable de entorno o la URL completa
-const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? '/api' : 'https://sgi-gservice-708746088485.us-central1.run.app/api');
+// En desarrollo, usa rutas relativas que serán proxy por Vite
+// En producción, usa la variable de entorno o la URL completa del backend
+const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? '' : 'https://sgi-gservice-708746088485.us-central1.run.app');
 let isRefreshing = false;
 let refreshSubscribers: ((token: string) => void)[] = [];
 

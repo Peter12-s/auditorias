@@ -4,14 +4,23 @@ import react from '@vitejs/plugin-react'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
-  base: '/auditorias/',
+  base: process.env.NODE_ENV === 'production' ? '/auditorias/' : '/',
   server: {
     proxy: {
-      '/api': {
+      '/auth': {
         target: 'https://sgi-gservice-708746088485.us-central1.run.app',
         changeOrigin: true,
         secure: false,
-        rewrite: (path) => path.replace(/^\/api/, ''), // Quitar /api del path
+      },
+      '/users': {
+        target: 'https://sgi-gservice-708746088485.us-central1.run.app',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/files': {
+        target: 'https://sgi-gservice-708746088485.us-central1.run.app',
+        changeOrigin: true,
+        secure: false,
       }
     }
   }

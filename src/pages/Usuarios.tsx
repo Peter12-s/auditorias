@@ -681,7 +681,7 @@ export function Usuarios() {
       formData.append('file', photoFile); // El campo se llama 'file' según la API
 
       // Subir la foto a la API
-      const response = await fetch(`/api/users/${userForPhoto.id}/photo`, {
+      const response = await fetch(`/users/${userForPhoto.id}/photo`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('access_token') || localStorage.getItem('mi_app_token')}`,
