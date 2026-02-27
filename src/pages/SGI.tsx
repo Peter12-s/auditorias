@@ -1598,7 +1598,7 @@ export function SGI() {
                               padding: '12px 14px',
                             }}
                           >
-                            <Group justify="space-between" style={{ flex: 1, marginRight: 20 }}>
+                            <Group justify="space-between" style={{ flex: 1 }} gap={8}>
                               <Stack gap={4} style={{ flex: 1 }}>
                                 <Text fw={600} size="lg" c="#4a4a4a">
                                   {punto.nombre}
@@ -1609,6 +1609,38 @@ export function SGI() {
                                   </Text>
                                 )}
                               </Stack>
+
+                              {/* BOTONES DE ACCIÓN EN HEADER */}
+                              <Group gap={6} wrap="nowrap" style={{ marginLeft: 'auto' }}>
+                                {auth.userType !== 'empresa' && (
+                                  <Button
+                                    size="xs"
+                                    variant="light"
+                                    color="blue"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleEditPunto(empresa.id, punto);
+                                    }}
+                                    leftSection={<FaEdit size={12} />}
+                                  >
+                                    Editar
+                                  </Button>
+                                )}
+                                {auth.userType === 'admin' && (
+                                  <Button
+                                    size="xs"
+                                    color="red"
+                                    variant="light"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeletePunto(empresa.id, punto.id);
+                                    }}
+                                    leftSection={<FaTrash size={12} />}
+                                  >
+                                    Eliminar
+                                  </Button>
+                                )}
+                              </Group>
                             </Group>
                           </Accordion.Control>
 
@@ -1636,34 +1668,6 @@ export function SGI() {
                                   />
                                 </Box>
                               )}
-
-                              {/* BOTONES DE ACCIÓN DEL PUNTO */}
-                              <Group justify="flex-start" gap={8}>
-                                {auth.userType !== 'empresa' && (
-                                  <Button
-                                    size="xs"
-                                    variant="light"
-                                    color="blue"
-                                    onClick={() => handleEditPunto(empresa.id, punto)}
-                                    leftSection={<FaEdit size={12} />}
-                                  >
-                                    Editar
-                                  </Button>
-                                )}
-                                {auth.userType === 'admin' && (
-                                  <Button
-                                    size="xs"
-                                    color="red"
-                                    variant="light"
-                                    onClick={() => handleDeletePunto(empresa.id, punto.id)}
-                                    leftSection={<FaTrash size={12} />}
-                                  >
-                                    Eliminar
-                                  </Button>
-                                )}
-                              </Group>
-
-                              <Divider my="xs" />
 
                               {/* SUBPUNTOS - ACCORDION */}
                               {punto.subpuntos.length > 0 ? (
