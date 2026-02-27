@@ -1715,7 +1715,7 @@ export function SGI() {
                                           <Group gap={6} wrap="nowrap" style={{ marginLeft: 'auto' }}>
                                             <Button
                                               size="xs"
-                                              variant="filled"
+                                              variant="light"
                                               color="#a1a23b"
                                               onClick={(e) => {
                                                 e.stopPropagation();
@@ -1728,32 +1728,32 @@ export function SGI() {
                                               Ver
                                             </Button>
                                             {auth.userType !== 'empresa' && (
-                                              <ActionIcon
-                                                size="sm"
+                                              <Button
+                                                size="xs"
+                                                variant="light"
                                                 color="blue"
-                                                variant="filled"
                                                 onClick={(e) => {
                                                   e.stopPropagation();
                                                   handleEditSubpunto(empresa.id, punto.id, subpunto);
                                                 }}
-                                                title="Editar"
+                                                leftSection={<FaEdit size={12} />}
                                               >
-                                                <FaEdit size={12} />
-                                              </ActionIcon>
+                                                Editar
+                                              </Button>
                                             )}
                                             {auth.userType === 'admin' && (
-                                              <ActionIcon
-                                                size="sm"
+                                              <Button
+                                                size="xs"
+                                                variant="light"
                                                 color="red"
-                                                variant="filled"
                                                 onClick={(e) => {
                                                   e.stopPropagation();
                                                   handleDeleteSubpunto(empresa.id, punto.id, subpunto.id);
                                                 }}
-                                                title="Eliminar"
+                                                leftSection={<FaTrash size={12} />}
                                               >
-                                                <FaTrash size={12} />
-                                              </ActionIcon>
+                                                Eliminar
+                                              </Button>
                                             )}
                                           </Group>
                                         </Group>
