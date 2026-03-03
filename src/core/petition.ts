@@ -90,11 +90,36 @@ export async function BasicPetition({
   try {
     const response = await fetch(`${API_BASE_URL}${endpoint}`, config);
     
+    console.log(`🔍 Response status: ${response.status}, Content-Type: ${response.headers.get('content-type')}, URL: ${endpoint}`);
+    
+    // Manejar 304 Not Modified - retornar array vacío
+    if (response.status === 304) {
+      console.log('📦 Respuesta 304 Not Modified, retornando array vacío');
+      return [];
+    }
+    
     // Verificar si la respuesta es JSON
     const contentType = response.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      await response.text();
-      throw new Error(`La respuesta del servidor no es JSON. URL: ${API_BASE_URL}${endpoint}`);
+    const isJson = contentType && contentType.includes('application/json');
+    
+    if (!isJson) {
+      const responseText = await response.text();
+      console.error('❌ Respuesta no-JSON recibida:', {
+        status: response.status,
+        statusText: response.statusText,
+        contentType,
+        responseText: responseText.substring(0, 300),
+        url: `${API_BASE_URL}${endpoint}`,
+      });
+      
+      // Si es un error, mostrar el estado HTTP
+      if (!response.ok) {
+        throw new Error(`Error ${response.status} ${response.statusText} en ${endpoint}. La respuesta no es JSON.`);
+      }
+      
+      // Si es OK pero no es JSON, asumir que es un array vacío
+      console.warn('⚠️ Respuesta OK pero no es JSON, retornando array vacío');
+      return [];
     }
     
     const responseData = await response.json();
@@ -187,10 +212,9 @@ export async function BasicPetition({
 
 export async function createPoint(companyUserId: number, name: string) {
   return BasicPetition({
-    endpoint: '/templates/points',
+    endpoint: `/templates/companies/${companyUserId}/points`,
     method: 'POST',
     data: {
-      companyUserId,
       name,
     },
     showNotifications: true,
@@ -209,9 +233,9 @@ export async function createSubpoint(pointId: number, name: string, periodicity:
   });
 }
 
-export async function updatePoint(pointId: number, name: string) {
+export async function updatePoint(companyUserId: number, pointId: number, name: string) {
   return BasicPetition({
-    endpoint: `/templates/points/${pointId}`,
+    endpoint: `/templates/companies/${companyUserId}/points/${pointId}`,
     method: 'PATCH',
     data: {
       name,
@@ -220,16 +244,56 @@ export async function updatePoint(pointId: number, name: string) {
   });
 }
 
-export async function updateSubpoint(subpointId: number, name: string, periodicity?: 'monthly' | 'yearly') {
+export async function updateSubpoint(pointId: number, subpointId: number, name: string, periodicity?: 'monthly' | 'yearly') {
   const data: any = { name };
   if (periodicity) {
     data.periodicity = periodicity;
   }
   
   return BasicPetition({
-    endpoint: `/templates/subpoints/${subpointId}`,
+    endpoint: `/templates/points/${pointId}/subpoints/${subpointId}`,
     method: 'PATCH',
     data,
+    showNotifications: true,
+  });
+}
+
+export async function deletePoint(companyUserId: number, pointId: number) {
+  return BasicPetition({
+    endpoint: `/templates/companies/${companyUserId}/points/${pointId}`,
+    method: 'DELETE',
+    showNotifications: true,
+  });
+}
+
+export async function sendMessage(templateSubpointId: number, message: string) {
+  return BasicPetition({
+    endpoint: '/chat/messages',
+    method: 'POST',
+    data: {
+      templateSubpointId,
+      message,
+    },
+    showNotifications: false,
+  });
+}
+
+export async function getMessages(templateSubpointId: number) {
+  return BasicPetition({
+    endpoint: `/chat/messages?templateSubpointId=${templateSubpointId}`,
+    method: 'GET',
+    showNotifications: false,
+  });
+}
+
+export async function deactivateAuditorFromCompany(auditorUserId: number, companyUserId: number) {
+  return BasicPetition({
+    endpoint: '/templates/auditor-company-assignments/deactivate',
+    method: 'PATCH',
+    data: {
+      auditorUserId,
+      companyUserId,
+    },
     showNotifications: true,
   });
 }

@@ -31,7 +31,8 @@ import { useForm } from '@mantine/form';
 import { showNotification } from '@mantine/notifications';
 import { FaPlus, FaEdit, FaTrash, FaChevronDown, FaCheck, FaTimes, FaFileUpload, FaSearchPlus, FaSearchMinus, FaEye } from 'react-icons/fa';
 import { useAuth } from '../AuthContext';
-import { BasicPetition, createPoint, createSubpoint, updatePoint, updateSubpoint } from '../core/petition';
+import { BasicPetition, createPoint, createSubpoint, updatePoint, updateSubpoint, deletePoint, sendMessage, getMessages } from '../core/petition';
+import { UserRole, getRoleLabel } from '../core/constants';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
 import { renderAsync } from 'docx-preview';
@@ -52,7 +53,7 @@ interface Mensaje {
   fecha: string;
   hora: string;
   usuario: string;
-  tipo: 'empresa' | 'auditor' | 'admin';
+  tipo: UserRole;
 }
 
 interface Periodo {
@@ -133,6 +134,7 @@ interface EmpresaGenerada {
 
 interface Empresa {
   id: string;
+  empresaId?: string;
   nombre: string;
   subEmpresa?: string;
   puntos: Punto[];
@@ -183,7 +185,7 @@ export function SGI() {
   const [selectedEmpresa, setSelectedEmpresa] = useState<string | null>(null);
   const [selectedPunto, setSelectedPunto] = useState<string | null>(null);
   const [viewingSubpunto, setViewingSubpunto] = useState<Subpunto | null>(null);
-  const [viewingContext, setViewingContext] = useState<{ empresa: string; punto: string } | null>(null);
+  const [viewingContext, setViewingContext] = useState<{ empresa: string; punto: string; puntoId: string } | null>(null);
   const [openedAuditores, setOpenedAuditores] = useState(false);
   const [selectedEmpresaForAuditores, setSelectedEmpresaForAuditores] = useState<string | null>(null);
   const [searchAuditor, setSearchAuditor] = useState('');
@@ -347,16 +349,47 @@ export function SGI() {
     }
   }, [openedViewer, viewingSubpunto?.id, viewingSubpunto?.archivoCargado]);
 
+  // 💬 useEffect para cargar mensajes del chat
+  useEffect(() => {
+    const loadChatMessages = async () => {
+      if (openedViewer && viewingSubpunto?.id) {
+        try {
+          console.log('💬 Cargando mensajes del chat para subpunto:', viewingSubpunto.id);
+          const response = await getMessages(parseInt(viewingSubpunto.id));
+          
+          console.log('✅ Mensajes cargados:', response);
+          
+          if (response && Array.isArray(response)) {
+            // Mapear respuesta a la estructura Mensaje
+            const mensajesFormateados = response.map((msg: any) => ({
+              id: String(msg.id || msg.messageId),
+              texto: msg.message || msg.texto,
+              fecha: msg.createdAt ? new Date(msg.createdAt).toLocaleDateString('es-ES') : '',
+              hora: msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '',
+              usuario: msg.user?.name || msg.usuario || 'Usuario',
+              tipo: msg.user?.role || msg.tipo || UserRole.AUDITOR,
+            }));
+            
+            // Actualizar los mensajes del subpunto
+            setViewingSubpunto((prev) => 
+              prev ? { ...prev, mensajes: mensajesFormateados } : null
+            );
+          }
+        } catch (error) {
+          console.error('❌ Error cargando mensajes:', error);
+        }
+      }
+    };
+    
+    loadChatMessages();
+  }, [openedViewer, viewingSubpunto?.id]);
+
   // Función para mapear periodicidad del backend a UI
   const mapPeriodicityToUI = (periodicity: string | undefined): string => {
     if (!periodicity) return 'Mensual';
     const map: { [key: string]: string } = {
       'monthly': 'Mensual',
       'yearly': 'Anual',
-      'weekly': 'Semanal',
-      'Mensual': 'Mensual',
-      'Anual': 'Anual',
-      'Semanal': 'Semanal',
     };
     return map[periodicity.toLowerCase()] || 'Mensual';
   };
@@ -366,7 +399,6 @@ export function SGI() {
     const map: { [key: string]: 'monthly' | 'yearly' } = {
       'Mensual': 'monthly',
       'Anual': 'yearly',
-      'Semanal': 'monthly', // Default a monthly si es semanal
     };
     return map[periodicidad] || 'monthly';
   };
@@ -387,34 +419,68 @@ export function SGI() {
       empresasCargadasRef.current = true;
       
       try {
-        const response = await BasicPetition({
-          endpoint: '/templates/companies',
-          method: 'GET',
-          data: {},
-          showNotifications: false,
-        });
+        console.log('🔑 Token disponible:', !!localStorage.getItem('access_token') || !!localStorage.getItem('mi_app_token'));
+        console.log('🔐 UserType:', auth?.userType, 'UserID:', auth?.userId);
         
-        
-        if (response && Array.isArray(response)) {
-          // Mapear respuesta de la API a la estructura Empresa
-          const empresasFromAPI = response.map((company: any) => ({
-            id: company.companyUserId || company.id || company._id,
-            nombre: company.profile?.nombreEmpresa || company.name || company.nombre || 'Sin nombre',
-            subEmpresa: company.profile?.subEmpresa,
+        // Si es Empresa, solo cargar datos de su propia empresa
+        if (auth?.userType === 'Empresa' && auth?.userId) {
+          console.log('👤 Usuario Empresa detectado, cargando datos de su empresa:', auth.userId);
+          
+          // Crear una empresa con su ID
+          const empresaData: Empresa = {
+            id: String(auth.userId),
+            empresaId: parseInt(auth.userId),
+            nombre: auth.fullName || 'Mi Empresa',
+            subEmpresa: undefined,
             auditoresAsignados: [],
             puntos: [],
-          }));
+          };
           
-          setEmpresas(empresasFromAPI);
+          setEmpresas([empresaData]);
+          
+          // Cargar inmediatamente los puntos de su empresa
+          await new Promise(r => setTimeout(r, 100));
+          await handleLoadPuntos(auth.userId);
+        } else {
+          // Para otros roles (Admin, Auditor), cargar todas las empresas
+          const response = await BasicPetition({
+            endpoint: '/templates/companies',
+            method: 'GET',
+            showNotifications: false,
+          });
+          
+          console.log('📋 Respuesta de empresas:', response, 'Tipo:', typeof response);
+          
+          if (response && Array.isArray(response)) {
+            // Mapear respuesta de la API a la estructura Empresa
+            const empresasFromAPI = response.map((company: any) => ({
+              id: String(company.companyUserId),
+              empresaId: company.companyUserId,
+              nombre: company.profile?.nombreEmpresa || 'Sin nombre',
+              subEmpresa: company.profile?.subEmpresa,
+              auditoresAsignados: [],
+              puntos: [],
+            }));
+            
+            console.log('✅ Empresas mapeadas:', empresasFromAPI.length, empresasFromAPI);
+            setEmpresas(empresasFromAPI);
+          } else {
+            console.log('⚠️ Respuesta no es un array:', response);
+          }
         }
       } catch (error) {
+        console.error('❌ Error cargando empresas:', error);
+        showNotification({
+          title: 'Error al cargar empresas',
+          message: error instanceof Error ? error.message : 'No se pudieron cargar las empresas',
+          color: 'red',
+          autoClose: false,
+        });
       }
     };
-
-    const isAdmin = auth?.userType?.toLowerCase() === 'admin' || 
-                   auth?.userType === 'Administrador';
     
-    if (isAdmin && !empresasCargadasRef.current) {
+    if (!empresasCargadasRef.current) {
+      console.log('👤 Iniciando carga de empresas...');
       loadEmpresas();
     }
   }, [auth]);
@@ -476,7 +542,7 @@ export function SGI() {
       // Editar punto existente con PATCH
       try {
         console.log('✏️ Actualizando punto:', editingPunto.punto.id);
-        await updatePoint(parseInt(editingPunto.punto.id), values.nombre);
+        await updatePoint(parseInt(editingPunto.empresaId), parseInt(editingPunto.punto.id), values.nombre);
 
         setEmpresas((prev) =>
           prev.map((empresa) =>
@@ -533,25 +599,39 @@ export function SGI() {
   };
 
   // 🗑️ ELIMINAR PUNTO
-  const handleDeletePunto = (empresaId: string, puntoId: string) => {
+  const handleDeletePunto = (empresaId: string, companyUserId: string, puntoId: string) => {
     setDeleteMessage('¿Eliminar este punto y todos sus subpuntos?');
     setDeleteAction(() => () => {
-      setEmpresas((prev) =>
-        prev.map((empresa) =>
-          empresa.id === empresaId
-            ? {
-                ...empresa,
-                puntos: empresa.puntos.filter((p) => p.id !== puntoId),
-              }
-            : empresa
-        )
-      );
-      showNotification({
-        title: 'Punto eliminado',
-        message: 'El punto se eliminó correctamente',
-        color: 'red',
-      });
-      setOpenedConfirm(false);
+      void deletePoint(parseInt(companyUserId), parseInt(puntoId))
+        .then(() => {
+          setEmpresas((prev) =>
+            prev.map((empresa) =>
+              empresa.id === empresaId
+                ? {
+                    ...empresa,
+                    puntos: empresa.puntos.filter((p) => p.id !== puntoId),
+                  }
+                : empresa
+            )
+          );
+
+          showNotification({
+            title: 'Punto eliminado',
+            message: 'El punto se eliminó correctamente',
+            color: 'red',
+          });
+        })
+        .catch((error) => {
+          console.error('❌ Error eliminando punto:', error);
+          showNotification({
+            title: 'Error',
+            message: 'No se pudo eliminar el punto',
+            color: 'red',
+          });
+        })
+        .finally(() => {
+          setOpenedConfirm(false);
+        });
     });
     setOpenedConfirm(true);
   };
@@ -590,6 +670,7 @@ export function SGI() {
       try {
         console.log('✏️ Actualizando subpunto:', editingSubpunto.subpunto.id);
         await updateSubpoint(
+          parseInt(editingSubpunto.puntoId),
           parseInt(editingSubpunto.subpunto.id),
           values.nombre,
           periodicity
@@ -936,32 +1017,64 @@ export function SGI() {
   const handleToggleAuditor = async (auditorId: string) => {
     if (!selectedEmpresaForAuditores) return;
 
-    try {
-      console.log('🔄 Asignando auditor:', {
-        auditorUserId: Number(auditorId),
-        companyUserId: Number(selectedEmpresaForAuditores)
-      });
+    // Obtener empresa actual y verificar si el auditor ya está asignado
+    const empresaActual = empresas.find(e => e.id === selectedEmpresaForAuditores);
+    const isCurrentlyAssigned = empresaActual?.auditoresAsignados.includes(auditorId) || false;
 
-      await BasicPetition({
-        endpoint: '/templates/auditor-company-assignments',
-        method: 'POST',
-        data: {
+    try {
+      if (isCurrentlyAssigned) {
+        // DESASIGNAR - usar PATCH /deactivate
+        console.log('🔴 Desasignando auditor:', {
           auditorUserId: Number(auditorId),
           companyUserId: Number(selectedEmpresaForAuditores)
-        },
-        showNotifications: false,
-      });
+        });
 
-      console.log('✅ Auditor asignado correctamente');
+        await BasicPetition({
+          endpoint: '/templates/auditor-company-assignments/deactivate',
+          method: 'PATCH',
+          data: {
+            auditorUserId: Number(auditorId),
+            companyUserId: Number(selectedEmpresaForAuditores)
+          },
+          showNotifications: false,
+        });
 
-      // Actualizar estado local
+        showNotification({
+          title: 'Auditor desasignado',
+          message: 'El auditor ha sido removido de esta empresa',
+          color: 'orange',
+        });
+      } else {
+        // ASIGNAR - usar POST
+        console.log('🟢 Asignando auditor:', {
+          auditorUserId: Number(auditorId),
+          companyUserId: Number(selectedEmpresaForAuditores)
+        });
+
+        await BasicPetition({
+          endpoint: '/templates/auditor-company-assignments',
+          method: 'POST',
+          data: {
+            auditorUserId: Number(auditorId),
+            companyUserId: Number(selectedEmpresaForAuditores)
+          },
+          showNotifications: false,
+        });
+
+        showNotification({
+          title: 'Auditor asignado',
+          message: 'El auditor se asignó correctamente',
+          color: 'green',
+        });
+      }
+
+      // Actualizar estado local - toggle la asignación
       setEmpresas((prev) =>
         prev.map((empresa) => {
           if (empresa.id === selectedEmpresaForAuditores) {
-            const isAssigned = empresa.auditoresAsignados.includes(auditorId);
             return {
               ...empresa,
-              auditoresAsignados: isAssigned
+              auditoresAsignados: isCurrentlyAssigned
                 ? empresa.auditoresAsignados.filter((id) => id !== auditorId)
                 : [...empresa.auditoresAsignados, auditorId],
             };
@@ -970,22 +1083,65 @@ export function SGI() {
         })
       );
 
-      showNotification({
-        title: 'Asignación actualizada',
-        message: 'El auditor se asignó correctamente',
-        color: 'green',
-      });
     } catch (error) {
-      console.error('❌ Error asignando auditor:', error);
+      console.error('❌ Error en toggle auditor:', error);
       showNotification({
         title: 'Error',
-        message: 'No se pudo asignar el auditor',
+        message: isCurrentlyAssigned ? 'No se pudo desasignar el auditor' : 'No se pudo asignar el auditor',
         color: 'red',
       });
     }
   };
 
-  // 📅 ACTUALIZAR PERIODICIDAD
+  // � DESACTIVAR AUDITOR DE UNA EMPRESA
+  const handleDesactivarAuditor = async (auditorUserId: number, empresaId: string) => {
+    try {
+      console.log('🔴 Desactivando auditor:', {
+        auditorUserId,
+        companyUserId: Number(empresaId)
+      });
+
+      await BasicPetition({
+        endpoint: '/templates/auditor-company-assignments/deactivate',
+        method: 'PATCH',
+        data: {
+          auditorUserId,
+          companyUserId: Number(empresaId)
+        },
+        showNotifications: false,
+      });
+
+      console.log('✅ Auditor desactivado correctamente');
+
+      // Actualizar estado local
+      setEmpresas((prev) =>
+        prev.map((empresa) => {
+          if (empresa.id === empresaId) {
+            return {
+              ...empresa,
+              auditoresAsignados: empresa.auditoresAsignados.filter((id) => id !== String(auditorUserId)),
+            };
+          }
+          return empresa;
+        })
+      );
+
+      showNotification({
+        title: 'Auditor desactivado',
+        message: 'El auditor ha sido removido de esta empresa',
+        color: 'orange',
+      });
+    } catch (error) {
+      console.error('❌ Error desactivando auditor:', error);
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo desactivar el auditor',
+        color: 'red',
+      });
+    }
+  };
+
+  // �📅 ACTUALIZAR PERIODICIDAD
   const handleUpdatePeriodicidad = async () => {
     if (!viewingSubpunto || !viewingContext) return;
 
@@ -998,7 +1154,7 @@ export function SGI() {
         periodicity: periodicity
       });
 
-      await updateSubpoint(parseInt(viewingSubpunto.id), viewingSubpunto.nombre, periodicity);
+      await updateSubpoint(parseInt(viewingContext.puntoId), parseInt(viewingSubpunto.id), viewingSubpunto.nombre, periodicity);
 
       setEmpresas((prev) =>
         prev.map((empresa) => {
@@ -1006,7 +1162,7 @@ export function SGI() {
             return {
               ...empresa,
               puntos: empresa.puntos.map((punto) => {
-                if (punto.nombre === viewingContext.punto) {
+                if (punto.id === viewingContext.puntoId) {
                   return {
                     ...punto,
                     subpuntos: punto.subpuntos.map((sp) =>
@@ -1099,15 +1255,16 @@ export function SGI() {
     // Obtener nombre del usuario según el tipo
     let nombreUsuario = '';
     let rolUsuario = '';
+    const userRole = getRoleLabel(auth.userType);
     
-    if (auth.userType === 'admin') {
+    if (userRole === UserRole.ADMINISTRADOR) {
       nombreUsuario = 'Administrador del Sistema';
-      rolUsuario = 'Administrador';
-    } else if (auth.userType === 'auditor') {
+      rolUsuario = UserRole.ADMINISTRADOR;
+    } else if (userRole === UserRole.AUDITOR) {
       // Buscar el nombre del auditor en la lista de auditores
       const auditor = auditores.find(a => a.correo === 'auditor@dogroup.com'); // Aquí debería usar el correo del usuario logueado
       nombreUsuario = auditor ? auditor.nombre : 'Auditor';
-      rolUsuario = 'Auditor';
+      rolUsuario = UserRole.AUDITOR;
     }
 
     const cambio: Cambio = {
@@ -1373,57 +1530,67 @@ export function SGI() {
   };
 
   // �💬 ENVIAR MENSAJE DE CHAT
-  const handleEnviarMensaje = () => {
+  const handleEnviarMensaje = async () => {
     if (!nuevoMensaje.trim() || !viewingSubpunto || !viewingContext) return;
 
-    const mensaje: Mensaje = {
-      id: `${viewingSubpunto.id}-msg-${Date.now()}`,
-      texto: nuevoMensaje,
-      fecha: new Date().toLocaleDateString('es-MX', { 
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric'
-      }),
-      hora: new Date().toLocaleTimeString('es-MX', { 
-        hour: '2-digit', 
-        minute: '2-digit',
-        hour12: false
-      }),
-      usuario: auth.userType === 'admin' ? 'Administrador' : 
-               auth.userType === 'auditor' ? 'Auditor' : 
-               viewingContext.empresa,
-      tipo: auth.userType as 'empresa' | 'auditor' | 'admin'
-    };
+    try {
+      // Enviar mensaje al API
+      await sendMessage(parseInt(viewingSubpunto.id), nuevoMensaje);
 
-    setEmpresas((prev) =>
-      prev.map((empresa) => {
-        if (empresa.nombre === viewingContext.empresa) {
-          return {
-            ...empresa,
-            puntos: empresa.puntos.map((punto) => {
-              if (punto.nombre === viewingContext.punto) {
-                return {
-                  ...punto,
-                  subpuntos: punto.subpuntos.map((sp) =>
-                    sp.id === viewingSubpunto.id
-                      ? { ...sp, mensajes: [...sp.mensajes, mensaje] }
-                      : sp
-                  ),
-                };
-              }
-              return punto;
-            }),
-          };
-        }
-        return empresa;
-      })
-    );
+      const mensaje: Mensaje = {
+        id: `${viewingSubpunto.id}-msg-${Date.now()}`,
+        texto: nuevoMensaje,
+        fecha: new Date().toLocaleDateString('es-MX', { 
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        }),
+        hora: new Date().toLocaleTimeString('es-MX', { 
+          hour: '2-digit', 
+          minute: '2-digit',
+          hour12: false
+        }),
+        usuario: getRoleLabel(auth.userType) === UserRole.AUDITOR ? UserRole.AUDITOR : viewingContext.empresa,
+        tipo: getRoleLabel(auth.userType),
+      };
 
-    setViewingSubpunto((prev) => 
-      prev ? { ...prev, mensajes: [...prev.mensajes, mensaje] } : null
-    );
+      setEmpresas((prev) =>
+        prev.map((empresa) => {
+          if (empresa.nombre === viewingContext.empresa) {
+            return {
+              ...empresa,
+              puntos: empresa.puntos.map((punto) => {
+                if (punto.id === viewingContext.puntoId) {
+                  return {
+                    ...punto,
+                    subpuntos: punto.subpuntos.map((sp) =>
+                      sp.id === viewingSubpunto.id
+                        ? { ...sp, mensajes: [...sp.mensajes, mensaje] }
+                        : sp
+                    ),
+                  };
+                }
+                return punto;
+              }),
+            };
+          }
+          return empresa;
+        })
+      );
 
-    setNuevoMensaje('');
+      setViewingSubpunto((prev) => 
+        prev ? { ...prev, mensajes: [...prev.mensajes, mensaje] } : null
+      );
+
+      setNuevoMensaje('');
+    } catch (error) {
+      console.error('❌ Error enviando mensaje:', error);
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo enviar el mensaje',
+        color: 'red',
+      });
+    }
   };
 
   return (
@@ -1432,21 +1599,152 @@ export function SGI() {
         SGI - Sistema de Gestión Información
       </Title>
 
-      {/* 🔍 BUSCADOR */}
-      <Group justify="flex-end" mb="xl">
-        <Input
-          placeholder="Buscar empresa..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.currentTarget.value)}
-          size="md"
-          style={{ width: '40%' }}
-        />
-       
-      </Group>
+      {/* 🔍 BUSCADOR - Solo mostrar si no es Empresa */}
+      {auth?.userType !== 'Empresa' && (
+        <Group justify="flex-end" mb="xl">
+          <Input
+            placeholder="Buscar empresa..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.currentTarget.value)}
+            size="md"
+            style={{ width: '40%' }}
+          />
+         
+        </Group>
+      )}
 
-      {/* 📋 LISTA DE EMPRESAS CON ACCORDION */}
-      <Stack gap="md">
-        {empresasPaginadas.map((empresa) => {
+      {/* 📋 VISTA PARA EMPRESA - Mostrar directamente los puntos sin accordion de empresa */}
+      {auth?.userType === 'Empresa' ? (
+        <Stack gap="md">
+          {empresas.length === 0 ? (
+            <Paper p="xl" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+              <Text c="dimmed" ta="center">
+                Cargando datos de tu empresa...
+              </Text>
+            </Paper>
+          ) : (
+            <Stack gap="md">
+              {empresas[0].puntos.length === 0 ? (
+                <Paper p="xl" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+                  <Text c="dimmed" ta="center" py="xl">
+                    No hay puntos registrados para tu empresa
+                  </Text>
+                </Paper>
+              ) : (
+                <Accordion
+                  chevronPosition="right"
+                  defaultValue={null}
+                  styles={{
+                    chevron: {
+                      fontSize: 16,
+                      marginRight: 0,
+                    }
+                  }}
+                >
+                  {empresas[0].puntos.map((punto) => (
+                    <Accordion.Item
+                      key={punto.id}
+                      value={punto.id}
+                      style={{
+                        backgroundColor: '#e8eaa6',
+                        border: '1px solid #d4d68f',
+                        marginBottom: 8,
+                        borderRadius: 6,
+                      }}
+                    >
+                      <Accordion.Control
+                        style={{
+                          padding: '12px 14px',
+                        }}
+                      >
+                        <Stack gap={4} style={{ flex: 1 }}>
+                          <Text fw={600} size="lg" c="#4a4a4a">
+                            {punto.nombre}
+                          </Text>
+                          {punto.subpuntos.length > 0 && (
+                            <Text size="xs" c="dimmed">
+                              {punto.subpuntos.filter((s) => s.archivoCargado).length} / {punto.subpuntos.length} completados
+                            </Text>
+                          )}
+                        </Stack>
+                      </Accordion.Control>
+
+                      <Accordion.Panel style={{ padding: '14px' }}>
+                        <Stack gap="md">
+                          {/* LISTA DE SUBPUNTOS */}
+                          {punto.subpuntos.length === 0 ? (
+                            <Text c="dimmed" ta="center" py="md">
+                              No hay subpuntos registrados para este punto
+                            </Text>
+                          ) : (
+                            <Stack gap="sm">
+                              {punto.subpuntos.map((subpunto) => (
+                                <Paper
+                                  key={subpunto.id}
+                                  p="sm"
+                                  withBorder
+                                  radius="sm"
+                                  style={{
+                                    backgroundColor: subpunto.archivoCargado ? '#e7f5ff' : '#f8f9fa',
+                                    borderLeft: `4px solid ${subpunto.archivoCargado ? '#1971c2' : '#ced4da'}`
+                                  }}
+                                >
+                                  <Group justify="space-between" align="center">
+                                    <Stack gap={4} style={{ flex: 1 }}>
+                                      <Group gap="xs" align="center">
+                                        <Text fw={500}>{subpunto.nombre}</Text>
+                                        <Badge size="sm" variant="light">
+                                          {subpunto.periodicidad}
+                                        </Badge>
+                                        {subpunto.archivoCargado && (
+                                          <Badge size="sm" color="green" leftSection={<FaCheck size={12} />}>
+                                            Completado
+                                          </Badge>
+                                        )}
+                                      </Group>
+                                    </Stack>
+                                    <Group gap="xs">
+                                      <Button
+                                        size="xs"
+                                        variant="light"
+                                        color="blue"
+                                        onClick={() => {
+                                          setViewingSubpunto(subpunto);
+                                          setViewingContext({ empresa: empresas[0].nombre, punto: punto.nombre, puntoId: punto.id });
+                                          setOpenedViewer(true);
+                                        }}
+                                        leftSection={<FaEye size={12} />}
+                                      >
+                                        Ver
+                                      </Button>
+                                    </Group>
+                                  </Group>
+                                </Paper>
+                              ))}
+                            </Stack>
+                          )}
+                        </Stack>
+                      </Accordion.Panel>
+                    </Accordion.Item>
+                  ))}
+                </Accordion>
+              )}
+            </Stack>
+          )}
+        </Stack>
+      ) : (
+        /* 📋 VISTA PARA ADMIN/AUDITOR - Lista de empresas con accordion */
+        <Stack gap="md">
+        {empresasPaginadas.length === 0 ? (
+          <Paper p="xl" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+            <Text c="dimmed" ta="center">
+              {empresas.length === 0 
+                ? 'Cargando empresas...' 
+                : 'No se encontraron empresas que coincidan con tu búsqueda'}
+            </Text>
+          </Paper>
+        ) : (
+          empresasPaginadas.map((empresa) => {
           // Calcular progreso total de la empresa
           const totalSubpuntos = empresa.puntos.reduce((sum, punto) => sum + punto.subpuntos.length, 0);
           const subpuntosConArchivo = empresa.puntos.reduce(
@@ -1521,39 +1819,41 @@ export function SGI() {
                     <>
                   {/* AUDITORES ASIGNADOS Y BOTONES */}
                   <Paper p="md" mb="md" withBorder style={{ backgroundColor: '#f8f9fa' }}>
-                    <Group justify="space-between" align="center">
-                      <Stack gap={4}>
-                        <Text size="sm" fw={600} c="dimmed">Auditores Asignados:</Text>
-                        {empresa.auditoresAsignados.length === 0 ? (
-                          <Text size="sm" c="dimmed" fs="italic">Sin auditores asignados</Text>
-                        ) : (
-                          <Group gap="xs">
-                            {empresa.auditoresAsignados.map((auditorId) => {
-                              const auditor = auditores.find(a => a.id === auditorId);
-                              return auditor ? (
-                                <Badge key={auditor.id} size="lg" color="teal" variant="dot">
-                                  {auditor.nombre}
-                                </Badge>
-                              ) : null;
-                            })}
-                          </Group>
+                    <Stack gap="md">
+                      <Group justify="space-between" align="flex-start">
+                        <Stack gap={4} style={{ flex: 1 }}>
+                          <Text size="sm" fw={600} c="dimmed">Auditores Asignados:</Text>
+                          {empresa.auditoresAsignados.length === 0 ? (
+                            <Text size="sm" c="dimmed" fs="italic">Sin auditores asignados</Text>
+                          ) : (
+                            <Stack gap="xs">
+                              {empresa.auditoresAsignados.map((auditorId) => {
+                                const auditor = auditores.find(a => a.id === auditorId);
+                                return auditor ? (
+                                  <Badge key={auditor.id} size="lg" color="teal" variant="dot">
+                                    {auditor.nombre}
+                                  </Badge>
+                                ) : null;
+                              })}
+                            </Stack>
+                          )}
+                        </Stack>
+                        {getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR && (
+                          <Button
+                            size="sm"
+                            variant="light"
+                            color="teal"
+                            onClick={() => handleOpenAuditores(empresa.id)}
+                          >
+                            Gestionar Auditores
+                          </Button>
                         )}
-                      </Stack>
-                      {auth.userType === 'Administrador' && (
-                        <Button
-                          size="sm"
-                          variant="light"
-                          color="teal"
-                          onClick={() => handleOpenAuditores(empresa.id)}
-                        >
-                          Gestionar Auditores
-                        </Button>
-                      )}
-                    </Group>
+                      </Group>
+                    </Stack>
                   </Paper>
 
                   {/* BOTÓN PARA AÑADIR PUNTO */}
-                  {auth.userType !== 'empresa' && (
+                  {getRoleLabel(auth.userType) !== UserRole.EMPRESA && (
                     <Group justify="flex-end" mb="md">
                       <Button
                         leftSection={<FaPlus size={14} />}
@@ -1567,7 +1867,7 @@ export function SGI() {
 
                   {/* LISTA DE PUNTOS - ACCORDION */}
                   
-                  { auth.userType !== 'empresa' && empresa.puntos.length === 0 ? (
+                  { getRoleLabel(auth.userType) !== UserRole.EMPRESA && empresa.puntos.length === 0 ? (
                     <Text c="dimmed" ta="center" py="xl">
                       No hay puntos registrados. Haz clic en "Añadir Punto" para crear uno.
                     </Text>
@@ -1598,54 +1898,46 @@ export function SGI() {
                               padding: '12px 14px',
                             }}
                           >
-                            <Group justify="space-between" style={{ flex: 1 }} gap={8}>
-                              <Stack gap={4} style={{ flex: 1 }}>
-                                <Text fw={600} size="lg" c="#4a4a4a">
-                                  {punto.nombre}
+                            <Stack gap={4} style={{ flex: 1 }}>
+                              <Text fw={600} size="lg" c="#4a4a4a">
+                                {punto.nombre}
+                              </Text>
+                              {punto.subpuntos.length > 0 && (
+                                <Text size="xs" c="dimmed">
+                                  {punto.subpuntos.filter((s) => s.archivoCargado).length} / {punto.subpuntos.length} completados
                                 </Text>
-                                {punto.subpuntos.length > 0 && (
-                                  <Text size="xs" c="dimmed">
-                                    {punto.subpuntos.filter((s) => s.archivoCargado).length} / {punto.subpuntos.length} completados
-                                  </Text>
-                                )}
-                              </Stack>
+                              )}
+                            </Stack>
+                          </Accordion.Control>
 
-                              {/* BOTONES DE ACCIÓN EN HEADER */}
-                              <Group gap={6} wrap="nowrap" style={{ marginLeft: 'auto' }}>
-                                {auth.userType !== 'empresa' && (
+                          <Accordion.Panel style={{ padding: '14px' }}>
+                            <Stack gap="md">
+                              {/* BOTONES DE ACCIÓN DEL PUNTO */}
+                              <Group justify="flex-end" gap={6} wrap="nowrap">
+                                {getRoleLabel(auth.userType) !== UserRole.EMPRESA && (
                                   <Button
                                     size="xs"
                                     variant="light"
                                     color="blue"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleEditPunto(empresa.id, punto);
-                                    }}
+                                    onClick={() => handleEditPunto(empresa.id, punto)}
                                     leftSection={<FaEdit size={12} />}
                                   >
                                     Editar
                                   </Button>
                                 )}
-                                {auth.userType === 'admin' && (
+                                {getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR && (
                                   <Button
                                     size="xs"
                                     color="red"
                                     variant="light"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDeletePunto(empresa.id, punto.id);
-                                    }}
+                                    onClick={() => handleDeletePunto(empresa.id, empresa.empresaId || empresa.id, punto.id)}
                                     leftSection={<FaTrash size={12} />}
                                   >
                                     Eliminar
                                   </Button>
                                 )}
                               </Group>
-                            </Group>
-                          </Accordion.Control>
 
-                          <Accordion.Panel style={{ padding: '14px' }}>
-                            <Stack gap="md">
                               {/* BARRA DE PROGRESO DEL PUNTO */}
                               {punto.subpuntos.length > 0 && (
                                 <Box>
@@ -1705,9 +1997,6 @@ export function SGI() {
                                                     {subpunto.archivoCargado ? 'Con archivo' : 'Sin archivo'}
                                                   </Badge>
                                                 </Group>
-                                                <Text size="xs" c="dimmed">
-                                                  Periodicidad: {subpunto.periodicidad}
-                                                </Text>
                                               </Stack>
 
                                               {/* BOTONES DE ACCIÓN */}
@@ -1718,14 +2007,14 @@ export function SGI() {
                                                   color="#a1a23b"
                                                   onClick={() => {
                                                     setViewingSubpunto(subpunto);
-                                                    setViewingContext({ empresa: empresa.nombre, punto: punto.nombre });
+                                                    setViewingContext({ empresa: empresa.nombre, punto: punto.nombre, puntoId: punto.id });
                                                     setOpenedViewer(true);
                                                   }}
                                                   leftSection={<FaEye size={12} />}
                                                 >
                                                   Ver
                                                 </Button>
-                                                {auth.userType !== 'empresa' && (
+                                                {getRoleLabel(auth.userType) !== UserRole.EMPRESA && (
                                                   <Button
                                                     size="xs"
                                                     variant="light"
@@ -1736,7 +2025,7 @@ export function SGI() {
                                                     Editar
                                                   </Button>
                                                 )}
-                                                {auth.userType === 'admin' && (
+                                                {getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR && (
                                                   <Button
                                                     size="xs"
                                                     variant="light"
@@ -1757,12 +2046,12 @@ export function SGI() {
                                 </Accordion>
                               ) : (
                                 <Text c="dimmed" size="sm" ta="center" py="md">
-                                  No hay subpuntos. {auth.userType !== 'empresa' && 'Haz clic en "Añadir Subpunto" para crear uno.'}
+                                  No hay subpuntos. {getRoleLabel(auth.userType) !== UserRole.EMPRESA && 'Haz clic en "Añadir Subpunto" para crear uno.'}
                                 </Text>
                               )}
 
                               {/* BOTÓN PARA AÑADIR SUBPUNTO */}
-                              {auth.userType !== 'empresa' && (
+                              {getRoleLabel(auth.userType) !== UserRole.EMPRESA && (
                                 <Button
                                   size="xs"
                                   variant="light"
@@ -1787,9 +2076,10 @@ export function SGI() {
             </Accordion>
           </Paper>
           );
-        })}
+        })
+        )}
 
-        {empresasFiltradas.length === 0 && (
+        {empresasPaginadas.length === 0 && empresas.length > 0 && (
           <Text c="dimmed" ta="center" py="xl">
             No se encontraron empresas
           </Text>
@@ -1815,7 +2105,8 @@ export function SGI() {
             </Stack>
           </Group>
         )}
-      </Stack>
+        </Stack>
+      )}
 
       {/* 📝 MODAL PARA PUNTO */}
       <Modal
@@ -1881,8 +2172,6 @@ export function SGI() {
               placeholder="Seleccione periodicidad"
               required
               data={[
-             
-                { value: 'Semanal', label: 'Semanal' },
                 { value: 'Mensual', label: 'Mensual' },
                 { value: 'Anual', label: 'Anual' },
               ]}
@@ -1973,59 +2262,7 @@ export function SGI() {
             {/* INFORMACIÓN DEL SUBPUNTO */}
             <Paper p="md" withBorder>
               <Stack gap="sm">
-                {/* Periodicidad con opción de editar */}
-                <Group justify="space-between" align="center">
-                  <Group gap="xs">
-                    <Text size="sm" fw={600}>Periodicidad:</Text>
-                    {editingPeriodicidad ? (
-                      <Group gap="xs">
-                        <Select
-                          size="xs"
-                          value={tempPeriodicidad}
-                          onChange={(value) => setTempPeriodicidad(value || '')}
-                          data={[
-                            { value: 'Semanal', label: 'Semanal' },
-                            { value: 'Mensual', label: 'Mensual' },
-                            { value: 'Anual', label: 'Anual' },
-                          ]}
-                          style={{ width: 150 }}
-                        />
-                        <ActionIcon
-                          size="sm"
-                          color="green"
-                          variant="light"
-                          onClick={handleUpdatePeriodicidad}
-                        >
-                          <FaCheck size={12} />
-                        </ActionIcon>
-                        <ActionIcon
-                          size="sm"
-                          color="red"
-                          variant="light"
-                          onClick={() => setEditingPeriodicidad(false)}
-                        >
-                          <FaTimes size={12} />
-                        </ActionIcon>
-                      </Group>
-                    ) : (
-                      <Group gap="xs">
-                        <Text size="sm">{viewingSubpunto.periodicidad}</Text>
-                        {auth.userType !== 'empresa' && (
-                          <ActionIcon
-                            size="xs"
-                            color="blue"
-                            variant="subtle"
-                            onClick={() => {
-                              setTempPeriodicidad(viewingSubpunto.periodicidad);
-                              setEditingPeriodicidad(true);
-                            }}
-                          >
-                            <FaEdit size={10} />
-                          </ActionIcon>
-                        )}
-                      </Group>
-                    )}
-                  </Group>
+                <Group justify="flex-end" align="center">
                   <Badge 
                     size="lg" 
                     color={viewingSubpunto.archivoCargado ? 'green' : 'gray'}
@@ -2046,9 +2283,9 @@ export function SGI() {
                     <Title order={4}>Visor de Archivos</Title>
                   </Group>
                   {/* Botón de subir/actualizar archivo */}
-                  {(auth.userType === 'admin' || 
-                    auth.userType === 'auditor' || 
-                    (auth.userType === 'empresa' && !viewingSubpunto.archivoCargado)) && (
+                  {(getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR || 
+                    getRoleLabel(auth.userType) === UserRole.AUDITOR || 
+                    (getRoleLabel(auth.userType) === UserRole.EMPRESA && !viewingSubpunto.archivoCargado)) && (
                     <FileInput
                       placeholder={viewingSubpunto.archivoCargado ? "Actualizar archivo" : "Subir archivo"}
                       accept="application/pdf,image/*,.doc,.docx,.xls,.xlsx"
@@ -2317,7 +2554,7 @@ export function SGI() {
                       <Text c="dimmed" ta="center">
                         No hay archivos cargados aún
                       </Text>
-                      {auth.userType === 'empresa' && (
+                      {getRoleLabel(auth.userType) === UserRole.EMPRESA && (
                         <Text size="xs" c="dimmed" ta="center">
                           Puedes subir un archivo usando el botón de arriba
                         </Text>
@@ -2348,7 +2585,7 @@ export function SGI() {
                         Agregar Cambio
                       </Button>
                     )}
-                    {(auth.userType === 'admin' || auth.userType === 'auditor') && viewingSubpunto.cambios.length > 0 && (
+                    {(getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR || getRoleLabel(auth.userType) === UserRole.AUDITOR) && viewingSubpunto.cambios.length > 0 && (
                       <Button
                         size="sm"
                         variant="light"
@@ -2502,8 +2739,8 @@ export function SGI() {
                   ) : (
                     <Stack gap="sm">
                       {viewingSubpunto.mensajes.map((mensaje) => {
-                        const isEmpresa = mensaje.tipo === 'empresa';
-                        const isAuditor = mensaje.tipo === 'auditor' || mensaje.tipo === 'admin';
+                        const isEmpresa = mensaje.tipo === UserRole.EMPRESA;
+                        const isAuditor = mensaje.tipo === UserRole.AUDITOR;
                         
                         return (
                           <Group 
@@ -2540,7 +2777,7 @@ export function SGI() {
                                   color={isEmpresa ? 'blue' : 'green'}
                                   variant="light"
                                 >
-                                  {isEmpresa ? 'Empresa' : mensaje.tipo === 'admin' ? 'Admin' : 'Auditor'}
+                                  {isEmpresa ? 'Empresa' : mensaje.tipo === UserRole.ADMINISTRADOR ? 'Admin' : 'Auditor'}
                                 </Badge>
                                 <Text size="xs" c="dimmed">
                                   {mensaje.fecha} {mensaje.hora}
@@ -2567,7 +2804,7 @@ export function SGI() {
                 </Paper>
 
                 {/* Input para nuevo mensaje - Solo para auditor y empresa */}
-                {auth.userType !== 'admin' ? (
+                {getRoleLabel(auth.userType) !== UserRole.ADMINISTRADOR ? (
                   <Group gap="xs" align="flex-end" wrap="nowrap">
                     <TextInput
                       placeholder="Escribe un mensaje..."
