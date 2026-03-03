@@ -31,7 +31,7 @@ import { useForm } from '@mantine/form';
 import { showNotification } from '@mantine/notifications';
 import { FaPlus, FaEdit, FaTrash, FaChevronDown, FaCheck, FaTimes, FaFileUpload, FaSearchPlus, FaSearchMinus, FaEye } from 'react-icons/fa';
 import { useAuth } from '../AuthContext';
-import { BasicPetition, createPoint, createSubpoint, updatePoint, updateSubpoint, deletePoint, sendMessage, getMessages } from '../core/petition';
+import { BasicPetition, createPoint, createSubpoint, updatePoint, updateSubpoint, deletePoint, sendMessage, getMessages, uploadAuditFile } from '../core/petition';
 import { UserRole, getRoleLabel } from '../core/constants';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
@@ -429,7 +429,7 @@ export function SGI() {
           // Crear una empresa con su ID
           const empresaData: Empresa = {
             id: String(auth.userId),
-            empresaId: parseInt(auth.userId),
+            empresaId: String(auth.userId),
             nombre: auth.fullName || 'Mi Empresa',
             subEmpresa: undefined,
             auditoresAsignados: [],
@@ -438,9 +438,12 @@ export function SGI() {
           
           setEmpresas([empresaData]);
           
-          // Cargar inmediatamente los puntos de su empresa
+          // Cargar inmediatamente los puntos y auditores de su empresa
           await new Promise(r => setTimeout(r, 100));
-          await handleLoadPuntos(auth.userId);
+          await Promise.all([
+            handleLoadPuntos(auth.userId),
+            handleLoadAuditores(auth.userId),
+          ]);
         } else {
           // Para otros roles (Admin, Auditor), cargar todas las empresas
           const response = await BasicPetition({
@@ -1198,16 +1201,18 @@ export function SGI() {
   };
 
   // 📎 MANEJAR SUBIDA DE ARCHIVO
-  const handleFileUpload = (file: File | null) => {
+  const handleFileUpload = async (file: File | null) => {
     if (!file || !viewingSubpunto || !viewingContext) return;
 
     setUploadingFile(true);
 
-    // Crear URL temporal del archivo para visualización
-    const fileUrl = URL.createObjectURL(file);
+    try {
+      console.log('📤 Subiendo archivo:', file.name, 'para subpunto:', viewingSubpunto.id);
+      
+      // Subir archivo al servidor
+      await uploadAuditFile(parseInt(viewingSubpunto.id), file);
 
-    // Simular upload (aquí iría la lógica de subida real)
-    setTimeout(() => {
+      // Actualizar estado local
       setEmpresas((prev) =>
         prev.map((empresa) => {
           if (empresa.nombre === viewingContext.empresa) {
@@ -1235,17 +1240,11 @@ export function SGI() {
       setViewingSubpunto((prev) => 
         prev ? { ...prev, archivoCargado: true, archivoUpload: file.name } : null
       );
-      
-      // Guardar la URL del archivo temporalmente
-      sessionStorage.setItem(`file_${viewingSubpunto.id}`, fileUrl);
-      
+    } catch (error) {
+      console.error('❌ Error al subir archivo:', error);
+    } finally {
       setUploadingFile(false);
-      showNotification({
-        title: viewingSubpunto.archivoCargado ? 'Archivo actualizado' : 'Archivo subido',
-        message: `El archivo "${file.name}" se ${viewingSubpunto.archivoCargado ? 'actualizó' : 'subió'} correctamente`,
-        color: 'green',
-      });
-    }, 1000);
+    }
   };
 
   // 📝 AGREGAR CAMBIO
@@ -1624,6 +1623,26 @@ export function SGI() {
             </Paper>
           ) : (
             <Stack gap="md">
+              <Paper p="md" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+                <Stack gap="sm">
+                  <Text size="sm" fw={600} c="dimmed">Auditores Asignados:</Text>
+                  {empresas[0].auditoresAsignados.length === 0 ? (
+                    <Text size="sm" c="dimmed" fs="italic">Sin auditores asignados</Text>
+                  ) : (
+                    <Group gap="xs" wrap="wrap">
+                      {empresas[0].auditoresAsignados.map((auditorId) => {
+                        const auditor = auditores.find(a => a.id === auditorId);
+                        return auditor ? (
+                          <Badge key={auditor.id} size="lg" color="teal" variant="dot">
+                            {auditor.nombre}
+                          </Badge>
+                        ) : null;
+                      })}
+                    </Group>
+                  )}
+                </Stack>
+              </Paper>
+
               {empresas[0].puntos.length === 0 ? (
                 <Paper p="xl" withBorder style={{ backgroundColor: '#f8f9fa' }}>
                   <Text c="dimmed" ta="center" py="xl">

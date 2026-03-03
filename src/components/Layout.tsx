@@ -6,19 +6,54 @@ import logoDoGroup from '../assets/logoG.png';
 import { useState, useEffect, useRef } from 'react';
 import { FaBuilding, FaUserShield, FaClipboardCheck, FaUser, FaEdit } from 'react-icons/fa';
 import { showNotification } from '@mantine/notifications';
+import { useAuth } from '../AuthContext';
+import { BasicPetition } from '../core/petition';
 
 export function AppLayout() {
+  const auth = useAuth();
   const [opened, { toggle, close }] = useDisclosure();
   const [openedPhoto, setOpenedPhoto] = useState(false);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [isEditingPhoto, setIsEditingPhoto] = useState(false);
   const [loading, setLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const triedRefreshPhotoRef = useRef(false);
 
   const [userName, setUserName] = useState<string>('');
   const [userType, setUserType] = useState<string>('');
-  const [userPhoto, setUserPhoto] = useState<string>('');
   const [userId, setUserId] = useState<string>('');
+
+  const refreshSignedPhotoUrl = async (targetUserId?: string) => {
+    const id = targetUserId || userId || auth.userId || '';
+    if (!id) return;
+
+    try {
+      const response = await BasicPetition({
+        endpoint: `/users/${id}/photo/signed-download`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+      const freshPhotoUrl = response?.downloadUrl || response?.url || response?.photo || '';
+      if (!freshPhotoUrl) return;
+
+      localStorage.setItem('mi_app_user_photo', freshPhotoUrl);
+
+      auth.login(
+        localStorage.getItem('access_token') || '',
+        undefined,
+        auth.userType || undefined,
+        auth.userId || undefined,
+        localStorage.getItem('refresh_token') || undefined,
+        auth.fullName || undefined,
+        freshPhotoUrl
+      );
+
+      triedRefreshPhotoRef.current = false;
+    } catch (error) {
+      // Silencioso: si falla, se mantiene placeholder
+    }
+  };
 
   useEffect(() => {
     // Obtener nombre de usuario desde localStorage
@@ -33,12 +68,6 @@ export function AppLayout() {
       setUserType(storedType);
     }
 
-    // Obtener foto de perfil desde localStorage (solo para auditores)
-    const storedPhoto = localStorage.getItem('mi_app_user_photo');
-    if (storedPhoto) {
-      setUserPhoto(storedPhoto);
-    }
-
     // Obtener ID de usuario
     const storedId = localStorage.getItem('mi_app_user_id');
     if (storedId) {
@@ -49,17 +78,30 @@ export function AppLayout() {
     const handleStorageChange = () => {
       const updatedName = localStorage.getItem('mi_app_user_name') || localStorage.getItem('fullName');
       const updatedType = localStorage.getItem('mi_app_user_type') || localStorage.getItem('role');
-      const updatedPhoto = localStorage.getItem('mi_app_user_photo');
       const updatedId = localStorage.getItem('mi_app_user_id');
       setUserName(updatedName || '');
       setUserType(updatedType || '');
-      setUserPhoto(updatedPhoto || '');
       setUserId(updatedId || '');
     };
 
     window.addEventListener('storage', handleStorageChange);
     return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
+
+  useEffect(() => {
+    const isAuditor = (auth.userType || userType || '').toLowerCase() === 'auditor';
+    const id = auth.userId || userId;
+
+    if (isAuditor && id) {
+      void refreshSignedPhotoUrl(id);
+    }
+  }, [auth.userType, auth.userId]);
+
+  const handleAvatarImageError = () => {
+    if (triedRefreshPhotoRef.current) return;
+    triedRefreshPhotoRef.current = true;
+    void refreshSignedPhotoUrl();
+  };
 
   // Función para obtener el ícono según el tipo de usuario
   const getUserIcon = () => {
@@ -166,8 +208,18 @@ export function AppLayout() {
       
       // Actualizar la foto actual con la nueva
       const newPhotoUrl = data?.url || data?.photo || data?.downloadUrl || URL.createObjectURL(photoFile);
-      setUserPhoto(newPhotoUrl);
       localStorage.setItem('mi_app_user_photo', newPhotoUrl);
+      
+      // Actualizar en el AuthContext para que se refleje inmediatamente
+      auth.login(
+        localStorage.getItem('access_token') || '',
+        undefined,
+        auth.userType || undefined,
+        auth.userId || undefined,
+        localStorage.getItem('refresh_token') || undefined,
+        auth.fullName || undefined,
+        newPhotoUrl
+      );
       
       showNotification({
         title: 'Foto actualizada',
@@ -221,12 +273,13 @@ export function AppLayout() {
             {/* Foto de perfil del auditor */}
             {(userType.toLowerCase() === 'auditor') && (
               <div style={{ position: 'relative', cursor: 'pointer' }} onClick={() => setOpenedPhoto(true)}>
-                {userPhoto ? (
+                {auth.userPhoto ? (
                   <Avatar
-                    src={userPhoto}
+                    src={auth.userPhoto}
                     alt={userName}
                     radius="xl"
                     size="lg"
+                    imageProps={{ onError: handleAvatarImageError }}
                     style={{ 
                       border: '2px solid #a1a23b',
                     }}
@@ -288,11 +341,12 @@ export function AppLayout() {
             padding: '20px'
           }}>
             <div style={{ position: 'relative' }}>
-              {userPhoto ? (
+              {auth.userPhoto ? (
                 <Avatar
-                  src={userPhoto}
+                  src={auth.userPhoto}
                   size={120}
                   radius="xl"
+                  imageProps={{ onError: handleAvatarImageError }}
                   style={{ border: '3px solid #9775FA' }}
                 />
               ) : (
@@ -333,7 +387,7 @@ export function AppLayout() {
               onChange={handleFileSelect}
             />
 
-            {userPhoto && !isEditingPhoto && (
+            {auth.userPhoto && !isEditingPhoto && (
               <Text size="sm" c="dimmed">
                 Foto actual
               </Text>

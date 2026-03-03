@@ -84,7 +84,13 @@ export async function BasicPetition({
   };
 
   if (data && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
-    config.body = JSON.stringify(data);
+    // Si data es FormData, no establecer Content-Type
+    if (data instanceof FormData) {
+      delete config.headers['Content-Type'];
+      config.body = data;
+    } else {
+      config.body = JSON.stringify(data);
+    }
   }
 
   try {
@@ -283,6 +289,18 @@ export async function getMessages(templateSubpointId: number) {
     endpoint: `/chat/messages?templateSubpointId=${templateSubpointId}`,
     method: 'GET',
     showNotifications: false,
+  });
+}
+
+export async function uploadAuditFile(templateSubpointId: number, file: File) {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  return BasicPetition({
+    endpoint: `/templates/subpoints/${templateSubpointId}/audit-files`,
+    method: 'POST',
+    data: formData,
+    showNotifications: true,
   });
 }
 

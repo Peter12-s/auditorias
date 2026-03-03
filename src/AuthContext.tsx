@@ -6,13 +6,15 @@ const AUTH_ROLE_KEY = 'role';
 const AUTH_FULLNAME_KEY = 'fullName';
 const AUTH_USER_TYPE_KEY = 'mi_app_user_type'; // Mantener por compatibilidad
 const AUTH_USER_ID_KEY = 'mi_app_user_id';
+const AUTH_USER_PHOTO_KEY = 'mi_app_user_photo';
 
 interface AuthContextType {
   isAuthenticated: boolean;
   userType: string | null;
   userId: string | null;
   fullName: string | null;
-  login: (token: string, callback?: () => void, userType?: string, userId?: string, refreshToken?: string, fullName?: string) => void;
+  userPhoto: string | null;
+  login: (token: string, callback?: () => void, userType?: string, userId?: string, refreshToken?: string, fullName?: string, photoUrl?: string) => void;
   logout: (callback?: () => void) => void;
   updateToken: (newToken: string) => void;
 }
@@ -37,13 +39,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return localStorage.getItem(AUTH_FULLNAME_KEY) || localStorage.getItem('mi_app_user_name');
   });
 
+  const [userPhoto, setUserPhoto] = useState<string | null>(() => {
+    return localStorage.getItem(AUTH_USER_PHOTO_KEY);
+  });
+
   const login = (
     token: string, 
     callback?: () => void, 
     userTypeParam?: string, 
     userIdParam?: string,
     refreshToken?: string,
-    fullNameParam?: string
+    fullNameParam?: string,
+    photoUrl?: string
   ) => {
     localStorage.setItem(AUTH_TOKEN_KEY, token);
     localStorage.setItem('mi_app_token', token); // Mantener por compatibilidad
@@ -69,6 +76,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUserId(userIdParam);
     }
 
+    if (photoUrl) {
+      localStorage.setItem(AUTH_USER_PHOTO_KEY, photoUrl);
+      setUserPhoto(photoUrl);
+    }
+
     setIsAuthenticated(true);
     if (callback) callback();
   };
@@ -85,6 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem(AUTH_FULLNAME_KEY);
     localStorage.removeItem(AUTH_USER_TYPE_KEY);
     localStorage.removeItem(AUTH_USER_ID_KEY);
+    localStorage.removeItem(AUTH_USER_PHOTO_KEY);
     localStorage.removeItem('mi_app_token');
     localStorage.removeItem('mi_app_user_name');
     localStorage.removeItem('mi_app_user_photo');
@@ -92,10 +105,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUserType(null);
     setUserId(null);
     setFullName(null);
+    setUserPhoto(null);
     if (callback) callback();
   };
 
-  const value = { isAuthenticated, userType, userId, fullName, login, logout, updateToken };
+  const value = { isAuthenticated, userType, userId, fullName, userPhoto, login, logout, updateToken };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

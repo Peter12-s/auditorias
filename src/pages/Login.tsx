@@ -206,10 +206,18 @@ export function Login() {
     
     saveUserData(mockUser.userId, mockUser.displayName, (mockUser as any).photoUrl);
 
-    auth.login(mockToken, () => {
-      showWelcomeNotification(mockUser.displayName, mockUser.userType);
-      navigate('/', { replace: true });
-    }, mockUser.userType, mockUser.userId);
+    auth.login(
+      mockToken, 
+      () => {
+        showWelcomeNotification(mockUser.displayName, mockUser.userType);
+        navigate('/', { replace: true });
+      }, 
+      mockUser.userType, 
+      mockUser.userId,
+      undefined, // refresh_token
+      mockUser.displayName, // fullName
+      (mockUser as any).photoUrl // photoUrl
+    );
   };
 
   // Manejar errores de login real
@@ -271,7 +279,20 @@ export function Login() {
         const displayName = login.fullName || login.nombre || extractDisplayName(login);
         const userType = login.role || login.user_type;
         const userId = String(login.userId ?? '');
-        const photoUrl = (login as any).photoUrl ?? login.fotoPerfil ?? login.photo ?? login.profile_photo ?? login.user?.fotoPerfil ?? login.user?.photo;
+        
+        // Extraer photoUrl de múltiples posibles ubicaciones en la respuesta
+        const photoUrl = 
+          (login as any).photoUrl ?? 
+          (login as any).photo_url ?? 
+          login.fotoPerfil ?? 
+          login.photo ?? 
+          login.profile_photo ?? 
+          login.user?.fotoPerfil ?? 
+          login.user?.photo ?? 
+          (login.user as any)?.photoUrl ??
+          (login.user as any)?.photo_url;
+
+        console.log('📸 PhotoUrl extraído:', photoUrl);
 
         saveUserData(userId, displayName, photoUrl);
 
@@ -285,7 +306,8 @@ export function Login() {
           userType,
           userId,
           login.refresh_token, // refresh_token
-          displayName // fullName
+          displayName, // fullName
+          photoUrl // photoUrl
         );
       }
     } catch (err: any) {
