@@ -74,19 +74,27 @@ export async function BasicPetition({
 }: PetitionOptions) {
   const token = localStorage.getItem('access_token') || localStorage.getItem('mi_app_token');
 
+  const requestHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(method === 'GET' && {
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      Pragma: 'no-cache',
+      Expires: '0',
+    }),
+    ...headers,
+    ...(token && { Authorization: `Bearer ${token}` }),
+  };
+
   const config: RequestInit = {
     method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...headers,
-      ...(token && { Authorization: `Bearer ${token}` }),
-    },
+    ...(method === 'GET' && { cache: 'no-store' }),
+    headers: requestHeaders,
   };
 
   if (data && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
     // Si data es FormData, no establecer Content-Type
     if (data instanceof FormData) {
-      delete config.headers['Content-Type'];
+      delete requestHeaders['Content-Type'];
       config.body = data;
     } else {
       config.body = JSON.stringify(data);
@@ -285,8 +293,17 @@ export async function sendMessage(templateSubpointId: number, message: string) {
 }
 
 export async function getMessages(templateSubpointId: number) {
+  const timestamp = Date.now();
   return BasicPetition({
-    endpoint: `/chat/messages?templateSubpointId=${templateSubpointId}`,
+    endpoint: `/chat/messages?templateSubpointId=${templateSubpointId}&_=${timestamp}`,
+    method: 'GET',
+    showNotifications: false,
+  });
+}
+
+export async function getLatestAuditFile(templateSubpointId: number) {
+  return BasicPetition({
+    endpoint: `/templates/subpoints/${templateSubpointId}/audit-files/latest`,
     method: 'GET',
     showNotifications: false,
   });
@@ -301,6 +318,28 @@ export async function uploadAuditFile(templateSubpointId: number, file: File) {
     method: 'POST',
     data: formData,
     showNotifications: true,
+  });
+}
+
+export async function replaceAuditFile(templateSubpointId: number, file: File, comment: string) {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('comment', comment);
+
+  return BasicPetition({
+    endpoint: `/templates/subpoints/${templateSubpointId}/audit-files/replacements`,
+    method: 'POST',
+    data: formData,
+    showNotifications: true,
+  });
+}
+
+export async function getAuditFileChanges(templateSubpointId: number) {
+  const timestamp = Date.now();
+  return BasicPetition({
+    endpoint: `/templates/subpoints/${templateSubpointId}/audit-files/changes?_=${timestamp}`,
+    method: 'GET',
+    showNotifications: false,
   });
 }
 

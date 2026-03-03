@@ -31,7 +31,7 @@ import { useForm } from '@mantine/form';
 import { showNotification } from '@mantine/notifications';
 import { FaPlus, FaEdit, FaTrash, FaChevronDown, FaCheck, FaTimes, FaFileUpload, FaSearchPlus, FaSearchMinus, FaEye } from 'react-icons/fa';
 import { useAuth } from '../AuthContext';
-import { BasicPetition, createPoint, createSubpoint, updatePoint, updateSubpoint, deletePoint, sendMessage, getMessages, uploadAuditFile } from '../core/petition';
+import { BasicPetition, createPoint, createSubpoint, updatePoint, updateSubpoint, deletePoint, sendMessage, getMessages, uploadAuditFile, replaceAuditFile, getLatestAuditFile, getAuditFileChanges } from '../core/petition';
 import { UserRole, getRoleLabel } from '../core/constants';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
@@ -87,9 +87,11 @@ interface EmpresaGenerada {
 
 interface Subpunto {
   id: string;
+  templateSubpointId?: string;
   nombre: string;
   periodicidad: string; // Diaria, Semanal, Mensual, etc.
   archivoUpload?: string; // Ruta del archivo
+  archivoDownloadUrl?: string; // URL firmada para visualizar/descargar
   estado: boolean; // true = activo, false = inactivo
   archivoCargado: boolean; // true = tiene archivos, false = no tiene
   cambios: Cambio[]; // Historial de cambios
@@ -194,6 +196,9 @@ export function SGI() {
   const [uploadingFile, setUploadingFile] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 3;
+  const [openedCommentModal, setOpenedCommentModal] = useState(false);
+  const [commentForUpdate, setCommentForUpdate] = useState('');
+  const [pendingFileForUpdate, setPendingFileForUpdate] = useState<File | null>(null);
   
   // Estados para Excel
   const [excelData, setExcelData] = useState<any[][]>([]);
@@ -212,17 +217,81 @@ export function SGI() {
   const [scale, setScale] = useState(1.0);
   const [pdfError, setPdfError] = useState(false);
 
-  // Estados para la parrilla de cambios
-  const [openedCambio, setOpenedCambio] = useState(false);
-  const [nuevoCambio, setNuevoCambio] = useState('');
-
   // Estados para el chat
   const [nuevoMensaje, setNuevoMensaje] = useState('');
+  const currentUserRole = getRoleLabel(auth.userType);
+  const canPostMessages = currentUserRole === UserRole.AUDITOR || currentUserRole === UserRole.EMPRESA;
+
+  const extractMessagesArray = (response: any): any[] => {
+    if (Array.isArray(response)) return response;
+    if (Array.isArray(response?.messages)) return response.messages;
+    if (Array.isArray(response?.data)) return response.data;
+    if (Array.isArray(response?.items)) return response.items;
+    return [];
+  };
+
+  const mapChatMessage = (msg: any): Mensaje => {
+    const role = getRoleLabel(
+      msg?.senderRole ||
+      msg?.user?.role ||
+      msg?.role ||
+      msg?.tipo
+    );
+    const createdAt = msg?.createdAt || msg?.fecha || new Date().toISOString();
+    const createdAtDate = new Date(createdAt);
+
+    return {
+      id: String(msg?.id || msg?.messageId || `msg-${Date.now()}-${Math.random()}`),
+      texto: msg?.message || msg?.texto || '',
+      fecha: !Number.isNaN(createdAtDate.getTime())
+        ? createdAtDate.toLocaleDateString('es-ES')
+        : '',
+      hora: !Number.isNaN(createdAtDate.getTime())
+        ? createdAtDate.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+        : '',
+      usuario:
+        msg?.senderName ||
+        msg?.user?.fullname ||
+        msg?.user?.name ||
+        msg?.usuario ||
+        (role === UserRole.EMPRESA ? 'Empresa' : role),
+      tipo: role,
+    };
+  };
+
+  const getTemplateSubpointId = (subpunto: Subpunto): number => {
+    const rawId = subpunto.templateSubpointId || subpunto.id;
+    const parsed = Number(rawId);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
+
+  const getSubpointFileUrl = (subpunto: Subpunto): string => {
+    if (subpunto.archivoDownloadUrl) return subpunto.archivoDownloadUrl;
+    if (subpunto.archivoUpload) return `/${subpunto.archivoUpload}`;
+    return '/sample.pdf';
+  };
+
+  const getFilenameFromDownloadUrl = (url: string): string => {
+    if (!url) return '';
+    try {
+      const urlObj = new URL(url);
+      const rawName = urlObj.pathname.split('/').pop() || '';
+      return decodeURIComponent(rawName);
+    } catch {
+      const rawName = url.split('?')[0].split('/').pop() || '';
+      try {
+        return decodeURIComponent(rawName);
+      } catch {
+        return rawName;
+      }
+    }
+  };
 
   // Función para detectar tipo de archivo
   const getFileType = (filename: string): 'pdf' | 'image' | 'doc' | 'excel' | 'unknown' => {
     if (!filename) return 'unknown';
-    const ext = filename.toLowerCase().split('.').pop();
+    const normalized = filename.toLowerCase().split('?')[0].split('#')[0];
+    const ext = normalized.split('/').pop()?.split('.').pop();
     if (ext === 'pdf') return 'pdf';
     if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'].includes(ext || '')) return 'image';
     if (['doc', 'docx'].includes(ext || '')) return 'doc';
@@ -324,64 +393,181 @@ export function SGI() {
     }
   };
 
+  // 📄 Cargar último archivo del subpunto al abrir el visor
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadLatestSubpointFile = async () => {
+      if (!openedViewer || !viewingSubpunto?.id) return;
+
+      const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+      if (!templateSubpointId) return;
+
+      try {
+        const latestFile = await getLatestAuditFile(templateSubpointId);
+        const latestDownloadUrl =
+          latestFile?.downloadUrl ||
+          latestFile?.file?.downloadUrl ||
+          '';
+
+        if (!latestDownloadUrl || isCancelled) return;
+
+        const latestFileName =
+          latestFile?.fileName ||
+          latestFile?.filename ||
+          latestFile?.originalName ||
+          latestFile?.file?.name ||
+          latestFile?.file?.fileName ||
+          getFilenameFromDownloadUrl(latestDownloadUrl) ||
+          viewingSubpunto.archivoUpload ||
+          '';
+
+        setViewingSubpunto((prev) =>
+          prev
+            ? {
+                ...prev,
+                archivoCargado: true,
+                archivoUpload: latestFileName,
+                archivoDownloadUrl: latestDownloadUrl,
+              }
+            : null
+        );
+
+        setEmpresas((prev) =>
+          prev.map((empresa) => {
+            if (empresa.nombre !== viewingContext?.empresa) return empresa;
+
+            return {
+              ...empresa,
+              puntos: empresa.puntos.map((punto) => {
+                if (punto.id !== viewingContext?.puntoId) return punto;
+
+                return {
+                  ...punto,
+                  subpuntos: punto.subpuntos.map((sp) =>
+                    sp.id === viewingSubpunto.id
+                      ? {
+                          ...sp,
+                          archivoCargado: true,
+                          archivoUpload: latestFileName,
+                          archivoDownloadUrl: latestDownloadUrl,
+                        }
+                      : sp
+                  ),
+                };
+              }),
+            };
+          })
+        );
+      } catch (error: any) {
+        if (error?.status !== 404 && error?.statusCode !== 404) {
+          console.error('❌ Error cargando archivo más reciente del subpunto:', error);
+        }
+      }
+    };
+
+    loadLatestSubpointFile();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [openedViewer, viewingSubpunto?.id]);
+
   // 🔄 useEffect para cargar archivos automáticamente
   useEffect(() => {
-    if (openedViewer && viewingSubpunto?.archivoUpload && viewingSubpunto?.archivoCargado) {
-      const fileType = getFileType(viewingSubpunto.archivoUpload);
-      const fileUrl = `/${viewingSubpunto.archivoUpload}`;
-      
-      // Cargar Excel si es necesario
-      if (fileType === 'excel' && excelData.length === 0 && !loadingExcel) {
-        loadExcelFile(fileUrl);
-      }
-      
-      // Cargar Word si es necesario
-      if (fileType === 'doc' && !wordLoaded && !loadingWord) {
-        // Esperar a que el DOM esté listo
-        setTimeout(() => {
-          const wordContainerId = `word-container-${viewingSubpunto.id}`;
-          const container = document.getElementById(wordContainerId);
-          if (container) {
-            loadWordFile(fileUrl, container as HTMLDivElement);
-          }
-        }, 100);
-      }
+    if (openedViewer && viewingSubpunto?.archivoCargado) {
+      const fileSource = viewingSubpunto.archivoUpload || viewingSubpunto.archivoDownloadUrl;
+      if (!fileSource) return;
+
+      const fileType = getFileType(fileSource);
+      // Solo previsualizamos PDFs en el visor.
+      if (fileType !== 'pdf') return;
     }
-  }, [openedViewer, viewingSubpunto?.id, viewingSubpunto?.archivoCargado]);
+  }, [openedViewer, viewingSubpunto?.id, viewingSubpunto?.archivoCargado, viewingSubpunto?.archivoUpload, viewingSubpunto?.archivoDownloadUrl]);
 
   // 💬 useEffect para cargar mensajes del chat
   useEffect(() => {
+    let intervalId: number | undefined;
+
     const loadChatMessages = async () => {
-      if (openedViewer && viewingSubpunto?.id) {
-        try {
-          console.log('💬 Cargando mensajes del chat para subpunto:', viewingSubpunto.id);
-          const response = await getMessages(parseInt(viewingSubpunto.id));
-          
-          console.log('✅ Mensajes cargados:', response);
-          
-          if (response && Array.isArray(response)) {
-            // Mapear respuesta a la estructura Mensaje
-            const mensajesFormateados = response.map((msg: any) => ({
-              id: String(msg.id || msg.messageId),
-              texto: msg.message || msg.texto,
-              fecha: msg.createdAt ? new Date(msg.createdAt).toLocaleDateString('es-ES') : '',
-              hora: msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '',
-              usuario: msg.user?.name || msg.usuario || 'Usuario',
-              tipo: msg.user?.role || msg.tipo || UserRole.AUDITOR,
-            }));
-            
-            // Actualizar los mensajes del subpunto
-            setViewingSubpunto((prev) => 
-              prev ? { ...prev, mensajes: mensajesFormateados } : null
-            );
-          }
-        } catch (error) {
-          console.error('❌ Error cargando mensajes:', error);
-        }
+      if (!openedViewer || !viewingSubpunto?.id) return;
+
+      try {
+        const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+        if (!templateSubpointId) return;
+
+        const response = await getMessages(templateSubpointId);
+        const messages = extractMessagesArray(response).map(mapChatMessage);
+
+        setViewingSubpunto((prev) =>
+          prev ? { ...prev, mensajes: messages } : null
+        );
+      } catch (error) {
+        console.error('❌ Error cargando mensajes:', error);
       }
     };
     
     loadChatMessages();
+
+    if (openedViewer && viewingSubpunto?.id) {
+      intervalId = window.setInterval(loadChatMessages, 600000); // 10 minutos
+    }
+
+    return () => {
+      if (intervalId) {
+        window.clearInterval(intervalId);
+      }
+    };
+  }, [openedViewer, viewingSubpunto?.id]);
+
+  // 📋 useEffect para cargar cambios desde el backend
+  useEffect(() => {
+    const loadChanges = async () => {
+      if (!openedViewer || !viewingSubpunto?.id) return;
+
+      try {
+        const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+        if (!templateSubpointId) return;
+
+        console.log('📋 Cargando cambios desde backend para templateSubpoint:', templateSubpointId);
+        const response = await getAuditFileChanges(templateSubpointId);
+        
+        console.log('📋 Respuesta completa del backend:', response);
+
+        // Mapear respuesta del backend a la estructura de Cambio
+        // El backend devuelve { events: [...] }
+        const events = response?.events || [];
+        const cambios = Array.isArray(events) ? events.map((event: any, index: number) => {
+          const fecha = event.at ? new Date(event.at).toLocaleDateString('es-MX', { 
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric'
+          }) : new Date().toLocaleDateString('es-MX');
+          
+          const fileName = event.file?.originalName || 'archivo';
+          const status = event.status === 'uploaded' ? 'Carga inicial' : 'Actualización';
+          
+          return {
+            id: String(event.submissionId || event.id || index + 1),
+            version: index + 1, // La versión es el índice + 1
+            descripcion: event.comment || `${status} - ${fileName}`,
+            fecha,
+            usuarioNombre: event.user?.fullName || event.user?.name || `Usuario ID: ${event.userId || 'Desconocido'}`,
+            usuarioRol: event.user?.role || status,
+          };
+        }) : [];
+
+        console.log('✅ Cambios mapeados:', cambios);
+
+        setViewingSubpunto((prev) =>
+          prev ? { ...prev, cambios } : null
+        );
+      } catch (error) {
+        console.error('❌ Error cargando cambios:', error);
+      }
+    };
+
+    loadChanges();
   }, [openedViewer, viewingSubpunto?.id]);
 
   // Función para mapear periodicidad del backend a UI
@@ -745,6 +931,12 @@ export function SGI() {
                             ...punto.subpuntos,
                             {
                               id: String(response.subpointId || `${punto.id}-${punto.subpuntos.length + 1}`),
+                              templateSubpointId: String(
+                                response.templateSubpointId ||
+                                response.template_subpoint_id ||
+                                response.subpointId ||
+                                `${punto.id}-${punto.subpuntos.length + 1}`
+                              ),
                               nombre: values.nombre,
                               periodicidad: values.periodicidad,
                               estado: values.estado,
@@ -988,11 +1180,13 @@ export function SGI() {
               subpuntos: Array.isArray(subpuntosFromAPI)
                 ? subpuntosFromAPI.map((sub: any) => ({
                     id: String(sub.subpointId || sub.id),
+                    templateSubpointId: String(sub.templateSubpointId || sub.template_subpoint_id || sub.subpointId || sub.id),
                     nombre: sub.nombre || sub.name,
                     periodicidad: mapPeriodicityToUI(sub.periodicidad || sub.periodicity),
                     archivoUpload: sub.archivoUpload || '',
+                  archivoDownloadUrl: sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl || '',
                     estado: sub.estado !== false,
-                    archivoCargado: !!sub.archivoUpload,
+                    archivoCargado: !!(sub.archivoUpload || sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl),
                     cambios: [],
                     mensajes: [],
                   }))
@@ -1200,17 +1394,100 @@ export function SGI() {
     }
   };
 
-  // 📎 MANEJAR SUBIDA DE ARCHIVO
+  // � FUNCIÓN PARA CARGAR CAMBIOS DESDE BACKEND
+  const loadChangesFromBackend = async () => {
+    if (!viewingSubpunto?.id) return;
+
+    try {
+      const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+      if (!templateSubpointId) return;
+
+      console.log('📋 Recargando cambios desde backend para templateSubpoint:', templateSubpointId);
+      const response = await getAuditFileChanges(templateSubpointId);
+      
+      console.log('📋 Respuesta completa del backend:', response);
+
+      // Mapear respuesta del backend a la estructura de Cambio
+      // El backend devuelve { events: [...] }
+      const events = response?.events || [];
+      const cambios = Array.isArray(events) ? events.map((event: any, index: number) => {
+        const fecha = event.at ? new Date(event.at).toLocaleDateString('es-MX', { 
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        }) : new Date().toLocaleDateString('es-MX');
+        
+        const fileName = event.file?.originalName || 'archivo';
+        const status = event.status === 'uploaded' ? 'Carga inicial' : 'Actualización';
+        
+        return {
+          id: String(event.submissionId || event.id || index + 1),
+          version: index + 1, // La versión es el índice + 1
+          descripcion: event.comment || `${status} - ${fileName}`,
+          fecha,
+          usuarioNombre: event.user?.fullName || event.user?.name || `Usuario ID: ${event.userId || 'Desconocido'}`,
+          usuarioRol: event.user?.role || status,
+        };
+      }) : [];
+
+      console.log('✅ Cambios recargados:', cambios);
+
+      setViewingSubpunto((prev) =>
+        prev ? { ...prev, cambios } : null
+      );
+    } catch (error) {
+      console.error('❌ Error recargando cambios:', error);
+    }
+  };
+
+  // �📎 MANEJAR SUBIDA DE ARCHIVO
   const handleFileUpload = async (file: File | null) => {
     if (!file || !viewingSubpunto || !viewingContext) return;
+
+    const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+    if (!templateSubpointId) {
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo identificar el templateSubpointId para subir el archivo',
+        color: 'red',
+      });
+      return;
+    }
+
+    // Detectar si es actualización (ya hay archivo cargado)
+    const isUpdate = viewingSubpunto.archivoCargado;
+
+    if (isUpdate) {
+      // Abrir modal para solicitar comentario
+      setPendingFileForUpdate(file);
+      setCommentForUpdate('');
+      setOpenedCommentModal(true);
+      return;
+    }
+
+    // Es una carga inicial (no hay archivo previo)
+    await handleUploadNewFile(file);
+  };
+
+  // 📤 SUBIR ARCHIVO NUEVO (sin comentario)
+  const handleUploadNewFile = async (file: File) => {
+    if (!file || !viewingSubpunto || !viewingContext) return;
+
+    const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+    if (!templateSubpointId) return;
 
     setUploadingFile(true);
 
     try {
-      console.log('📤 Subiendo archivo:', file.name, 'para subpunto:', viewingSubpunto.id);
+      console.log('📤 Subiendo archivo inicial:', file.name, 'para templateSubpoint:', templateSubpointId);
       
-      // Subir archivo al servidor
-      await uploadAuditFile(parseInt(viewingSubpunto.id), file);
+      // Usar endpoint normal de upload
+      const uploadResponse = await uploadAuditFile(templateSubpointId, file);
+      const downloadUrl =
+        uploadResponse?.downloadUrl ||
+        uploadResponse?.archivoDownloadUrl ||
+        uploadResponse?.file?.downloadUrl ||
+        '';
 
       // Actualizar estado local
       setEmpresas((prev) =>
@@ -1224,7 +1501,7 @@ export function SGI() {
                     ...punto,
                     subpuntos: punto.subpuntos.map((sp) =>
                       sp.id === viewingSubpunto.id
-                        ? { ...sp, archivoCargado: true, archivoUpload: file.name }
+                        ? { ...sp, archivoCargado: true, archivoUpload: file.name, archivoDownloadUrl: downloadUrl }
                         : sp
                     ),
                   };
@@ -1238,8 +1515,14 @@ export function SGI() {
       );
 
       setViewingSubpunto((prev) => 
-        prev ? { ...prev, archivoCargado: true, archivoUpload: file.name } : null
+        prev ? { ...prev, archivoCargado: true, archivoUpload: file.name, archivoDownloadUrl: downloadUrl } : null
       );
+
+      showNotification({
+        title: 'Archivo cargado',
+        message: 'El archivo ha sido cargado correctamente',
+        color: 'green',
+      });
     } catch (error) {
       console.error('❌ Error al subir archivo:', error);
     } finally {
@@ -1247,76 +1530,93 @@ export function SGI() {
     }
   };
 
-  // 📝 AGREGAR CAMBIO
-  const handleAgregarCambio = () => {
-    if (!nuevoCambio.trim() || !viewingSubpunto || !viewingContext) return;
+  // 🔄 PROCESAR ACTUALIZACIÓN DE ARCHIVO CON COMENTARIO
+  const handleConfirmFileUpdate = async () => {
+    if (!pendingFileForUpdate || !viewingSubpunto || !viewingContext) return;
 
-    // Obtener nombre del usuario según el tipo
-    let nombreUsuario = '';
-    let rolUsuario = '';
-    const userRole = getRoleLabel(auth.userType);
-    
-    if (userRole === UserRole.ADMINISTRADOR) {
-      nombreUsuario = 'Administrador del Sistema';
-      rolUsuario = UserRole.ADMINISTRADOR;
-    } else if (userRole === UserRole.AUDITOR) {
-      // Buscar el nombre del auditor en la lista de auditores
-      const auditor = auditores.find(a => a.correo === 'auditor@dogroup.com'); // Aquí debería usar el correo del usuario logueado
-      nombreUsuario = auditor ? auditor.nombre : 'Auditor';
-      rolUsuario = UserRole.AUDITOR;
+    // Validar comentario
+    if (!commentForUpdate.trim()) {
+      showNotification({
+        title: 'Comentario requerido',
+        message: 'Debes proporcionar un comentario para actualizar el archivo',
+        color: 'red',
+      });
+      return;
     }
 
-    const cambio: Cambio = {
-      id: `${viewingSubpunto.id}-cambio-${Date.now()}`,
-      version: viewingSubpunto.cambios.length,
-      descripcion: nuevoCambio,
-      fecha: new Date().toLocaleDateString('es-MX', { 
-        year: 'numeric', 
-        month: '2-digit', 
-        day: '2-digit' 
-      }),
-      usuarioNombre: nombreUsuario,
-      usuarioRol: rolUsuario,
-    };
+    const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+    if (!templateSubpointId) {
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo identificar el templateSubpointId',
+        color: 'red',
+      });
+      return;
+    }
 
-    setEmpresas((prev) =>
-      prev.map((empresa) => {
-        if (empresa.nombre === viewingContext.empresa) {
-          return {
-            ...empresa,
-            puntos: empresa.puntos.map((punto) => {
-              if (punto.nombre === viewingContext.punto) {
-                return {
-                  ...punto,
-                  subpuntos: punto.subpuntos.map((sp) =>
-                    sp.id === viewingSubpunto.id
-                      ? { ...sp, cambios: [...sp.cambios, cambio] }
-                      : sp
-                  ),
-                };
-              }
-              return punto;
-            }),
-          };
-        }
-        return empresa;
-      })
-    );
+    setUploadingFile(true);
+    setOpenedCommentModal(false);
 
-    setViewingSubpunto((prev) => 
-      prev ? { ...prev, cambios: [...prev.cambios, cambio] } : null
-    );
+    try {
+      console.log('🔄 Actualizando archivo:', pendingFileForUpdate.name, 'con comentario:', commentForUpdate);
+      
+      // Usar endpoint de replacement
+      const uploadResponse = await replaceAuditFile(templateSubpointId, pendingFileForUpdate, commentForUpdate);
+      const downloadUrl =
+        uploadResponse?.downloadUrl ||
+        uploadResponse?.archivoDownloadUrl ||
+        uploadResponse?.file?.downloadUrl ||
+        '';
 
-    setNuevoCambio('');
-    setOpenedCambio(false);
-    showNotification({
-      title: 'Cambio registrado',
-      message: `Versión ${cambio.version} agregada correctamente`,
-      color: 'green',
-    });
+      // Actualizar estado local
+      setEmpresas((prev) =>
+        prev.map((empresa) => {
+          if (empresa.nombre === viewingContext.empresa) {
+            return {
+              ...empresa,
+              puntos: empresa.puntos.map((punto) => {
+                if (punto.nombre === viewingContext.punto) {
+                  return {
+                    ...punto,
+                    subpuntos: punto.subpuntos.map((sp) =>
+                      sp.id === viewingSubpunto.id
+                        ? { ...sp, archivoCargado: true, archivoUpload: pendingFileForUpdate.name, archivoDownloadUrl: downloadUrl }
+                        : sp
+                    ),
+                  };
+                }
+                return punto;
+              }),
+            };
+          }
+          return empresa;
+        })
+      );
+
+      setViewingSubpunto((prev) => 
+        prev ? { ...prev, archivoCargado: true, archivoUpload: pendingFileForUpdate.name, archivoDownloadUrl: downloadUrl } : null
+      );
+
+      // Recargar los cambios después de actualizar
+      await loadChangesFromBackend();
+
+      showNotification({
+        title: 'Archivo actualizado',
+        message: 'El archivo ha sido actualizado correctamente',
+        color: 'green',
+      });
+
+      // Limpiar estados
+      setPendingFileForUpdate(null);
+      setCommentForUpdate('');
+    } catch (error) {
+      console.error('❌ Error al actualizar archivo:', error);
+    } finally {
+      setUploadingFile(false);
+    }
   };
 
-  // 📥 DESCARGAR REPORTE DE CAMBIOS
+  //  DESCARGAR REPORTE DE CAMBIOS
   const handleDescargarReporte = () => {
     if (!viewingSubpunto || !viewingContext) return;
 
@@ -1531,10 +1831,21 @@ export function SGI() {
   // �💬 ENVIAR MENSAJE DE CHAT
   const handleEnviarMensaje = async () => {
     if (!nuevoMensaje.trim() || !viewingSubpunto || !viewingContext) return;
+    if (!canPostMessages) return;
 
     try {
+      const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+      if (!templateSubpointId) {
+        showNotification({
+          title: 'Error',
+          message: 'No se pudo identificar el templateSubpointId para enviar el mensaje',
+          color: 'red',
+        });
+        return;
+      }
+
       // Enviar mensaje al API
-      await sendMessage(parseInt(viewingSubpunto.id), nuevoMensaje);
+      await sendMessage(templateSubpointId, nuevoMensaje);
 
       const mensaje: Mensaje = {
         id: `${viewingSubpunto.id}-msg-${Date.now()}`,
@@ -1549,8 +1860,8 @@ export function SGI() {
           minute: '2-digit',
           hour12: false
         }),
-        usuario: getRoleLabel(auth.userType) === UserRole.AUDITOR ? UserRole.AUDITOR : viewingContext.empresa,
-        tipo: getRoleLabel(auth.userType),
+        usuario: currentUserRole === UserRole.AUDITOR ? UserRole.AUDITOR : viewingContext.empresa,
+        tipo: currentUserRole,
       };
 
       setEmpresas((prev) =>
@@ -1789,7 +2100,14 @@ export function SGI() {
                   
                     <Stack gap="xs" style={{ flex: 1 }}>
                       <Group justify="space-between" wrap="nowrap">
-                        <Text fw={600}>{empresa.nombre}</Text>
+                        <Stack gap={0}>
+                          <Text fw={600}>{empresa.nombre}</Text>
+                          {empresa.subEmpresa ? (
+                            <Text size="xs" c="dimmed" fw={500}>
+                               {empresa.subEmpresa}
+                            </Text>
+                          ) : null}
+                        </Stack>
                         {empresasConDatos.has(empresa.empresaId || empresa.id) && (
                           <Group gap="xs">
                             <Badge color="teal" size="lg" variant="light">
@@ -2333,8 +2651,10 @@ export function SGI() {
                           variant="light" 
                           color="gray"
                           component="a"
-                          href={`/${viewingSubpunto.archivoUpload || 'sample.pdf'}`}
+                          href={getSubpointFileUrl(viewingSubpunto)}
                           download
+                          target="_blank"
+                          rel="noopener noreferrer"
                         >
                           Descargar
                         </Button>
@@ -2343,41 +2663,11 @@ export function SGI() {
 
                     {/* Controles según tipo de archivo */}
                     {(() => {
-                      const fileType = getFileType(viewingSubpunto.archivoUpload || 'documento.pdf');
+                      const fileType = getFileType(viewingSubpunto.archivoUpload || viewingSubpunto.archivoDownloadUrl || 'documento.pdf');
                       
                       // El iframe de PDF tiene sus propios controles nativos
                       if (fileType === 'pdf') {
                         return null;
-                      }
-                      
-                      if (fileType === 'image') {
-                        return (
-                          <Group justify="center" gap="md" wrap="wrap">
-                            <Group gap="xs">
-                              <ActionIcon
-                                size="lg"
-                                variant="light"
-                                color="blue"
-                                onClick={() => setScale(prev => Math.max(0.5, prev - 0.2))}
-                                disabled={scale <= 0.5}
-                              >
-                                <FaSearchMinus size={16} />
-                              </ActionIcon>
-                              <Text size="sm" fw={500}>
-                                {Math.round(scale * 100)}%
-                              </Text>
-                              <ActionIcon
-                                size="lg"
-                                variant="light"
-                                color="blue"
-                                onClick={() => setScale(prev => Math.min(2.0, prev + 0.2))}
-                                disabled={scale >= 2.0}
-                              >
-                                <FaSearchPlus size={16} />
-                              </ActionIcon>
-                            </Group>
-                          </Group>
-                        );
                       }
                       
                       return null;
@@ -2398,10 +2688,10 @@ export function SGI() {
                       }}
                     >
                       {(() => {
-                        const fileType = getFileType(viewingSubpunto.archivoUpload || 'documento.pdf');
+                        const fileType = getFileType(viewingSubpunto.archivoUpload || viewingSubpunto.archivoDownloadUrl || 'documento.pdf');
                         // Para PDF e imágenes, usar blob si existe. Para Word/Excel, usar solo ruta directa
                         const storedFileUrl = sessionStorage.getItem(`file_${viewingSubpunto.id}`);
-                        let fileUrl = `/${viewingSubpunto.archivoUpload || 'sample.pdf'}`;
+                        let fileUrl = getSubpointFileUrl(viewingSubpunto);
                         
                         // Solo usar blob URL para PDF e imágenes (iframe puede manejarlos)
                         if ((fileType === 'pdf' || fileType === 'image') && storedFileUrl) {
@@ -2424,142 +2714,27 @@ export function SGI() {
                             );
 
                           case 'image':
-                            return (
-                              <Box style={{ 
-                                width: '100%',
-                                height: '100%',
-                                display: 'flex',
-                                justifyContent: 'center',
-                                alignItems: 'center',
-                                overflow: 'auto'
-                              }}>
-                                <img 
-                                  src={fileUrl} 
-                                  alt="Archivo cargado"
-                                  style={{ 
-                                    maxWidth: `${scale * 100}%`,
-                                    maxHeight: '65vh',
-                                    objectFit: 'contain',
-                                    transition: 'all 0.3s ease'
-                                  }}
-                                />
-                              </Box>
-                            );
-
                           case 'excel':
-                            // Para Excel, mostrar interfaz de carga
-                            return (
-                                <Stack gap="md">
-                                  {/* Selector de hojas */}
-                                  {excelSheets.length > 1 && (
-                                    <Group gap="xs">
-                                      <Text size="sm" fw={600}>Hoja:</Text>
-                                      {excelSheets.map((sheet) => (
-                                        <Button
-                                          key={sheet}
-                                          size="xs"
-                                          variant={selectedSheet === sheet ? 'filled' : 'light'}
-                                          color="#a1a23b"
-                                          onClick={() => changeExcelSheet(sheet, fileUrl)}
-                                        >
-                                          {sheet}
-                                        </Button>
-                                      ))}
-                                    </Group>
-                                  )}
-
-                                  {loadingExcel ? (
-                                    <Stack align="center" gap="md" p="xl">
-                                      <Text>📊 Cargando Excel...</Text>
-                                    </Stack>
-                                  ) : excelData.length > 0 ? (
-                                    <Box style={{ overflowX: 'auto', maxHeight: '600px', overflowY: 'auto' }}>
-                                      <table style={{
-                                        width: '100%',
-                                        borderCollapse: 'collapse',
-                                        fontSize: '0.875rem',
-                                        backgroundColor: 'white'
-                                      }}>
-                                        <tbody>
-                                          {excelData.map((row, rowIndex) => (
-                                            <tr key={rowIndex}>
-                                              {row.map((cell, cellIndex) => (
-                                                <td
-                                                  key={cellIndex}
-                                                  style={{
-                                                    border: '1px solid #dee2e6',
-                                                    padding: '8px',
-                                                    backgroundColor: rowIndex === 0 ? '#f1f3f5' : 'white',
-                                                    fontWeight: rowIndex === 0 ? 600 : 400,
-                                                    minWidth: '100px'
-                                                  }}
-                                                >
-                                                  {cell !== null && cell !== undefined ? String(cell) : ''}
-                                                </td>
-                                              ))}
-                                            </tr>
-                                          ))}
-                                        </tbody>
-                                      </table>
-                                    </Box>
-                                  ) : (
-                                    <Stack align="center" gap="md" p="xl">
-                                      <Text style={{ fontSize: '60px' }}>📊</Text>
-                                      <Text size="lg" fw={600} c="#a1a23b">Documento Excel</Text>
-                                      <Text size="sm" c="dimmed">Haz clic para cargar y visualizar el archivo</Text>
-                                      <Button
-                                        size="md"
-                                        leftSection={<FaFileUpload size={16} />}
-                                        color="#a1a23b"
-                                        onClick={() => loadExcelFile(fileUrl)}
-                                      >
-                                        Cargar Excel
-                                      </Button>
-                                    </Stack>
-                                  )}
-                                </Stack>
-                              );
-
                           case 'doc':
-                            // Para Word, mostrar interfaz de carga con docx-preview
-                            const wordContainerId = `word-container-${viewingSubpunto.id}`;
-                            
-                            return (
-                                <Stack gap="md">
-                                  {loadingWord && (
-                                    <Stack align="center" gap="md" p="xl">
-                                      <Text>📄 Cargando documento Word...</Text>
-                                    </Stack>
-                                  )}
-                                  
-                                  <Paper
-                                    p="md"
-                                    withBorder
-                                    style={{
-                                      backgroundColor: 'white',
-                                      maxHeight: '600px',
-                                      overflowY: 'auto',
-                                      minHeight: wordLoaded || loadingWord ? '400px' : '100px'
-                                    }}
-                                  >
-                                    <div
-                                      id={wordContainerId}
-                                      style={{
-                                        minHeight: '400px'
-                                      }}
-                                    />
-                                  </Paper>
-                                </Stack>
-                              );
-
                           default:
                             return (
                               <Stack align="center" gap="md" p="xl">
-                                <FaFileUpload size={40} color="#868e96" />
-                                <Text c="dimmed" fw={500}>Tipo de archivo no soportado</Text>
+                                <FaFileUpload size={40} color="#4c6ef5" />
+                                <Text fw={700} c="#4c6ef5">Previsualización no disponible</Text>
                                 <Text size="sm" c="dimmed" ta="center">
-                                  Este tipo de archivo no se puede previsualizar. Descárgalo para verlo.
+                                  Este archivo no es PDF. Descárgalo para visualizarlo.
                                 </Text>
+                                <Button
+                                  component="a"
+                                  href={fileUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  color="#a1a23b"
+                                  variant="light"
+                                  download
+                                >
+                                  Descargar archivo
+                                </Button>
                               </Stack>
                             );
                         }
@@ -2593,17 +2768,6 @@ export function SGI() {
                     <Title order={5}>Parrilla de Cambios</Title>
                   </Group>
                   <Group gap="xs">
-                    {auth.userType !== 'empresa' && (
-                      <Button
-                        size="sm"
-                        variant="light"
-                        color="#a1a23b"
-                        leftSection={<FaPlus size={14} />}
-                        onClick={() => setOpenedCambio(true)}
-                      >
-                        Agregar Cambio
-                      </Button>
-                    )}
                     {(getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR || getRoleLabel(auth.userType) === UserRole.AUDITOR) && viewingSubpunto.cambios.length > 0 && (
                       <Button
                         size="sm"
@@ -2626,7 +2790,6 @@ export function SGI() {
                       </Text>
                       {auth.userType !== 'empresa' && (
                         <Text size="xs" c="dimmed" ta="center">
-                          Usa el botón "Agregar Cambio" para registrar modificaciones
                         </Text>
                       )}
                     </Stack>
@@ -2663,15 +2826,6 @@ export function SGI() {
                               padding: '12px', 
                               textAlign: 'left', 
                               borderBottom: '2px solid #dee2e6',
-                              fontWeight: 600,
-                              width: '150px'
-                            }}>
-                              Usuario
-                            </th>
-                            <th style={{ 
-                              padding: '12px', 
-                              textAlign: 'left', 
-                              borderBottom: '2px solid #dee2e6',
                               fontWeight: 600
                             }}>
                               Descripción
@@ -2701,13 +2855,6 @@ export function SGI() {
                                 color: '#495057'
                               }}>
                                 {cambio.fecha}
-                              </td>
-                              <td style={{ 
-                                padding: '12px', 
-                                borderBottom: '1px solid #dee2e6',
-                                color: '#495057'
-                              }}>
-                                {cambio.usuarioNombre}
                               </td>
                               <td style={{ 
                                 padding: '12px', 
@@ -2759,7 +2906,7 @@ export function SGI() {
                     <Stack gap="sm">
                       {viewingSubpunto.mensajes.map((mensaje) => {
                         const isEmpresa = mensaje.tipo === UserRole.EMPRESA;
-                        const isAuditor = mensaje.tipo === UserRole.AUDITOR;
+                        const isAdmin = mensaje.tipo === UserRole.ADMINISTRADOR;
                         
                         return (
                           <Group 
@@ -2774,7 +2921,7 @@ export function SGI() {
                                 width: 36,
                                 height: 36,
                                 borderRadius: '50%',
-                                backgroundColor: isEmpresa ? '#4dabf7' : '#51cf66',
+                                backgroundColor: isEmpresa ? '#4dabf7' : isAdmin ? '#ffd43b' : '#51cf66',
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'center',
@@ -2782,18 +2929,18 @@ export function SGI() {
                                 fontSize: '18px'
                               }}
                             >
-                              {isEmpresa ? '🏢' : '👤'}
+                              {isEmpresa ? '🏢' : isAdmin ? '🛡️' : '👤'}
                             </Box>
                             
                             {/* Contenido del mensaje */}
                             <Stack gap={4} style={{ flex: 1 }}>
                               <Group gap="xs" wrap="nowrap">
-                                <Text size="sm" fw={600} c={isEmpresa ? '#1971c2' : '#2f9e44'}>
+                                <Text size="sm" fw={600} c={isEmpresa ? '#1971c2' : isAdmin ? '#e67700' : '#2f9e44'}>
                                   {mensaje.usuario}
                                 </Text>
                                 <Badge 
                                   size="xs" 
-                                  color={isEmpresa ? 'blue' : 'green'}
+                                  color={isEmpresa ? 'blue' : isAdmin ? 'yellow' : 'green'}
                                   variant="light"
                                 >
                                   {isEmpresa ? 'Empresa' : mensaje.tipo === UserRole.ADMINISTRADOR ? 'Admin' : 'Auditor'}
@@ -2807,7 +2954,7 @@ export function SGI() {
                                 radius="sm"
                                 style={{ 
                                   backgroundColor: 'white',
-                                  border: `1px solid ${isEmpresa ? '#a5d8ff' : '#b2f2bb'}`
+                                  border: `1px solid ${isEmpresa ? '#a5d8ff' : isAdmin ? '#ffe066' : '#b2f2bb'}`
                                 }}
                               >
                                 <Text size="sm">
@@ -2823,7 +2970,7 @@ export function SGI() {
                 </Paper>
 
                 {/* Input para nuevo mensaje - Solo para auditor y empresa */}
-                {getRoleLabel(auth.userType) !== UserRole.ADMINISTRADOR ? (
+                {canPostMessages ? (
                   <Group gap="xs" align="flex-end" wrap="nowrap">
                     <TextInput
                       placeholder="Escribe un mensaje..."
@@ -2959,46 +3106,68 @@ export function SGI() {
         </Stack>
       </Modal>
 
-      {/* 📝 MODAL PARA AGREGAR CAMBIO */}
+      {/* 💬 MODAL PARA COMENTARIO DE ACTUALIZACIÓN */}
       <Modal
-        opened={openedCambio}
+        opened={openedCommentModal}
         onClose={() => {
-          setOpenedCambio(false);
-          setNuevoCambio('');
+          setOpenedCommentModal(false);
+          setCommentForUpdate('');
+          setPendingFileForUpdate(null);
         }}
-        title="Agregar Cambio"
+        title="Actualización de Archivo"
         size="md"
+        centered
       >
         <Stack gap="md">
+          <Paper p="sm" withBorder style={{ backgroundColor: '#fff9db', borderColor: '#ffd43b' }}>
+            <Text size="sm" fw={500}>
+              ⚠️ Este subpunto ya tiene un archivo cargado
+            </Text>
+          </Paper>
+
           <Text size="sm" c="dimmed">
-            Registra un nuevo cambio para este subpunto. Se asignará automáticamente la versión {viewingSubpunto?.cambios.length || 0}.
+            Por favor proporciona un comentario que describa esta actualización. Este comentario se registrará en el historial de cambios.
           </Text>
 
           <Textarea
-            label="Descripción del Cambio"
-            placeholder="Describe el cambio realizado..."
-            value={nuevoCambio}
-            onChange={(e) => setNuevoCambio(e.currentTarget.value)}
+            label="Comentario de actualización"
+            placeholder='Ejemplo: "fecha actualizada", "correcciones aplicadas", "nueva versión"...'
+            value={commentForUpdate}
+            onChange={(e) => setCommentForUpdate(e.currentTarget.value)}
             required
             minRows={3}
+            autoFocus
           />
+
+          {pendingFileForUpdate && (
+            <Paper p="xs" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+              <Group gap="xs">
+                <FaFileUpload size={14} color="#a1a23b" />
+                <Text size="xs" c="dimmed">
+                  Archivo: <strong>{pendingFileForUpdate.name}</strong>
+                </Text>
+              </Group>
+            </Paper>
+          )}
 
           <Group justify="flex-end" mt="md">
             <Button
               variant="default"
               onClick={() => {
-                setOpenedCambio(false);
-                setNuevoCambio('');
+                setOpenedCommentModal(false);
+                setCommentForUpdate('');
+                setPendingFileForUpdate(null);
               }}
             >
               Cancelar
             </Button>
             <Button 
               color="#a1a23b"
-              onClick={handleAgregarCambio}
-              disabled={!nuevoCambio.trim()}
+              onClick={handleConfirmFileUpdate}
+              disabled={!commentForUpdate.trim() || uploadingFile}
+              loading={uploadingFile}
             >
-              Registrar Cambio
+              Actualizar Archivo
             </Button>
           </Group>
         </Stack>
