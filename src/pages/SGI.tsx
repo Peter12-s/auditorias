@@ -27,6 +27,7 @@ import {
   Loader,
   Center,
 } from '@mantine/core';
+import { MonthPickerInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
 import { showNotification } from '@mantine/notifications';
 import { FaPlus, FaEdit, FaTrash, FaChevronDown, FaCheck, FaTimes, FaFileUpload, FaSearchPlus, FaSearchMinus, FaEye } from 'react-icons/fa';
@@ -141,6 +142,9 @@ interface Empresa {
   subEmpresa?: string;
   puntos: Punto[];
   auditoresAsignados: string[]; // IDs de auditores asignados
+  // Estadísticas de subpuntos desde el backend
+  totalSubpoints?: number;
+  subpointsWithFiles?: number;
 }
 
 interface Auditor {
@@ -167,6 +171,9 @@ interface FormSubpunto {
   nombre: string;
   periodicidad: string;
   estado: boolean;
+  periodoInicio: Date | null;
+  periodoFin: Date | null;
+  duracionAnios: string;
 }
 
 export function SGI() {
@@ -552,7 +559,7 @@ export function SGI() {
             version: index + 1, // La versión es el índice + 1
             descripcion: event.comment || `${status} - ${fileName}`,
             fecha,
-            usuarioNombre: event.user?.fullName || event.user?.name || `Usuario ID: ${event.userId || 'Desconocido'}`,
+            usuarioNombre: event.user?.fullName || event.user?.name || getUserNameById(event.userId),
             usuarioRol: event.user?.role || status,
           };
         }) : [];
@@ -593,6 +600,27 @@ export function SGI() {
   const [loadingAuditores, setLoadingAuditores] = useState(false);
   const [empresasConDatos, setEmpresasConDatos] = useState<Set<string>>(new Set());
   const [empresasCargando, setEmpresasCargando] = useState<Set<string>>(new Set());
+
+  // 👤 Función para obtener nombre de usuario por ID
+  const getUserNameById = (userId: number | string | undefined): string => {
+    if (!userId) return 'Usuario desconocido';
+    const id = String(userId);
+    
+    // Buscar en auditores
+    const auditor = auditores.find(a => String(a.id) === id);
+    if (auditor) return auditor.nombre;
+    
+    // Buscar en empresas
+    const empresa = empresas.find(e => String(e.id) === id || String(e.empresaId) === id);
+    if (empresa) return empresa.nombre;
+    
+    // Verificar si es el usuario actual
+    if (auth?.userId && String(auth.userId) === id) {
+      return 'Usuario actual';
+    }
+    
+    return `Usuario ID: ${id}`;
+  };
 
   // 🗂️ DATOS MOCK DE EMPRESAS
   const [empresas, setEmpresas] = useState<Empresa[]>([]);
@@ -690,10 +718,37 @@ export function SGI() {
       nombre: '',
       periodicidad: 'Mensual',
       estado: true,
+      periodoInicio: null,
+      periodoFin: null,
+      duracionAnios: '1',
     },
     validate: {
       nombre: (value) => (!value ? 'El nombre es requerido' : null),
       periodicidad: (value) => (!value ? 'La periodicidad es requerida' : null),
+      periodoInicio: (value, values) => {
+        // Solo validar si es Mensual
+        if (values.periodicidad === 'Mensual' && !value) {
+          return 'El periodo de inicio es requerido';
+        }
+        return null;
+      },
+      periodoFin: (value, values) => {
+        // Solo validar si es Mensual
+        if (values.periodicidad === 'Mensual') {
+          if (!value) return 'El periodo de fin es requerido';
+          if (values.periodoInicio && value < values.periodoInicio) {
+            return 'El periodo de fin debe ser posterior al inicio';
+          }
+        }
+        return null;
+      },
+      duracionAnios: (value, values) => {
+        // Solo validar si es Anual
+        if (values.periodicidad === 'Anual' && !value) {
+          return 'La duración es requerida';
+        }
+        return null;
+      },
     },
   });
 
@@ -854,6 +909,31 @@ export function SGI() {
     // Mapear periodicidad a valores de API
     const periodicity = mapPeriodicityToAPI(values.periodicidad);
 
+    // Construir auditPeriods dependiendo de la periodicidad
+    let auditPeriods: { startMonth: number; startYear: number; endMonth: number; endYear: number }[] = [];
+    
+    if (values.periodicidad === 'Mensual' && values.periodoInicio && values.periodoFin) {
+      // Convertir a Date si no lo son
+      const inicio = values.periodoInicio instanceof Date ? values.periodoInicio : new Date(values.periodoInicio);
+      const fin = values.periodoFin instanceof Date ? values.periodoFin : new Date(values.periodoFin);
+      
+      auditPeriods = [{
+        startMonth: inicio.getMonth() + 1,
+        startYear: inicio.getFullYear(),
+        endMonth: fin.getMonth() + 1,
+        endYear: fin.getFullYear(),
+      }];
+    } else if (values.periodicidad === 'Anual') {
+      const currentYear = new Date().getFullYear();
+      const duracion = parseInt(values.duracionAnios) || 1;
+      auditPeriods = [{
+        startMonth: 1,
+        startYear: currentYear,
+        endMonth: 12,
+        endYear: currentYear + duracion - 1,
+      }];
+    }
+
     if (editingSubpunto) {
       // Editar subpunto existente con PATCH
       try {
@@ -862,7 +942,8 @@ export function SGI() {
           parseInt(editingSubpunto.puntoId),
           parseInt(editingSubpunto.subpunto.id),
           values.nombre,
-          periodicity
+          periodicity,
+          auditPeriods
         );
 
         setEmpresas((prev) =>
@@ -908,11 +989,12 @@ export function SGI() {
       // Crear nuevo subpunto con POST al API
       try {
         console.log('🆕 Creando subpunto para punto:', selectedPunto);
-        
+
         const response = await createSubpoint(
           parseInt(selectedPunto),
           values.nombre,
-          periodicity
+          periodicity,
+          auditPeriods
         );
 
         console.log('✅ Subpunto creado:', response);
@@ -1115,11 +1197,11 @@ export function SGI() {
     setEmpresasCargando((prev) => new Set([...prev, empresaId]));
 
     try {
-      // Cargar en paralelo puntos y auditores
+      // Cargar en paralelo puntos, auditores y estadísticas de subpuntos
       await Promise.all([
         handleLoadPuntos(empresaId),
-        handleLoadAuditores(empresaId)
-
+        handleLoadAuditores(empresaId),
+        handleLoadSubpointStats(empresaId)
       ]);
 
       // Marcar empresa como cargada
@@ -1134,6 +1216,36 @@ export function SGI() {
         newSet.delete(empresaId);
         return newSet;
       });
+    }
+  };
+
+  // 📊 CARGAR ESTADÍSTICAS DE SUBPUNTOS
+  const handleLoadSubpointStats = async (empresaId: string) => {
+    try {
+      console.log('📊 Cargando estadísticas de subpuntos para empresa:', empresaId);
+      const response = await BasicPetition({
+        endpoint: `/templates/companies/${empresaId}/subpoints/stats`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+      console.log('✅ Estadísticas de subpuntos:', response);
+
+      if (response && typeof response.totalSubpoints === 'number') {
+        setEmpresas((prev) =>
+          prev.map((emp) =>
+            emp.id === empresaId || emp.empresaId === empresaId
+              ? {
+                  ...emp,
+                  totalSubpoints: response.totalSubpoints,
+                  subpointsWithFiles: response.subpointsWithFiles || 0,
+                }
+              : emp
+          )
+        );
+      }
+    } catch (error) {
+      console.error('❌ Error cargando estadísticas de subpuntos:', error);
     }
   };
 
@@ -1186,7 +1298,7 @@ export function SGI() {
                     archivoUpload: sub.archivoUpload || '',
                   archivoDownloadUrl: sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl || '',
                     estado: sub.estado !== false,
-                    archivoCargado: !!(sub.archivoUpload || sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl),
+                    archivoCargado: sub.hasFiles === true || !!(sub.archivoUpload || sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl),
                     cambios: [],
                     mensajes: [],
                   }))
@@ -1425,7 +1537,7 @@ export function SGI() {
           version: index + 1, // La versión es el índice + 1
           descripcion: event.comment || `${status} - ${fileName}`,
           fecha,
-          usuarioNombre: event.user?.fullName || event.user?.name || `Usuario ID: ${event.userId || 'Desconocido'}`,
+          usuarioNombre: event.user?.fullName || event.user?.name || getUserNameById(event.userId),
           usuarioRol: event.user?.role || status,
         };
       }) : [];
@@ -2075,12 +2187,16 @@ export function SGI() {
           </Paper>
         ) : (
           empresasPaginadas.map((empresa) => {
-          // Calcular progreso total de la empresa
-          const totalSubpuntos = empresa.puntos.reduce((sum, punto) => sum + punto.subpuntos.length, 0);
-          const subpuntosConArchivo = empresa.puntos.reduce(
-            (sum, punto) => sum + punto.subpuntos.filter(s => s.archivoCargado).length,
-            0
-          );
+          // Usar estadísticas del backend si están disponibles, sino calcular localmente
+          const totalSubpuntos = empresa.totalSubpoints !== undefined 
+            ? empresa.totalSubpoints 
+            : empresa.puntos.reduce((sum, punto) => sum + punto.subpuntos.length, 0);
+          const subpuntosConArchivo = empresa.subpointsWithFiles !== undefined 
+            ? empresa.subpointsWithFiles 
+            : empresa.puntos.reduce(
+                (sum, punto) => sum + punto.subpuntos.filter(s => s.archivoCargado).length,
+                0
+              );
           const progresoEmpresa = totalSubpuntos > 0 ? (subpuntosConArchivo / totalSubpuntos) * 100 : 0;
 
           return (
@@ -2493,14 +2609,16 @@ export function SGI() {
           setEditingSubpunto(null);
         }}
         title={editingSubpunto ? 'Editar Subpunto' : 'Nuevo Subpunto'}
-        size="md"
+        size="lg"
+        centered
       >
         <form onSubmit={formSubpunto.onSubmit(handleSubmitSubpunto)}>
-          <Stack gap="md">
+          <Stack gap="lg">
             <TextInput
               label="Nombre del Subpunto"
-              placeholder="Ej: Subpunto 4.1"
+              placeholder="Ej: Capacitación, Permisos, etc."
               required
+              size="md"
               {...formSubpunto.getInputProps('nombre')}
             />
 
@@ -2508,6 +2626,7 @@ export function SGI() {
               label="Periodicidad"
               placeholder="Seleccione periodicidad"
               required
+              size="md"
               data={[
                 { value: 'Mensual', label: 'Mensual' },
                 { value: 'Anual', label: 'Anual' },
@@ -2515,10 +2634,87 @@ export function SGI() {
               {...formSubpunto.getInputProps('periodicidad')}
             />
 
+            {/* SECCIÓN DE PERIODO DE AUDITORÍA */}
+            <Paper p="md" withBorder radius="md" style={{ backgroundColor: '#f8f9fa' }}>
+              <Stack gap="md">
+                <Text fw={600} size="sm" c="dimmed">📅 Periodo de Auditoría</Text>
+                
+                {formSubpunto.values.periodicidad === 'Mensual' ? (
+                  <>
+                    <Group grow>
+                      <MonthPickerInput
+                        label="Mes de inicio"
+                        placeholder="Seleccione mes de inicio"
+                        required
+                        size="md"
+                        valueFormat="MMMM YYYY"
+                        locale="es"
+                        minDate={new Date()}
+                        maxDate={new Date(new Date().getFullYear() + 2, 11, 31)}
+                        {...formSubpunto.getInputProps('periodoInicio')}
+                      />
+                      
+                      <MonthPickerInput
+                        label="Mes de fin"
+                        placeholder="Seleccione mes de fin"
+                        required
+                        size="md"
+                        valueFormat="MMMM YYYY"
+                        locale="es"
+                        minDate={formSubpunto.values.periodoInicio instanceof Date ? formSubpunto.values.periodoInicio : new Date()}
+                        maxDate={new Date(new Date().getFullYear() + 2, 11, 31)}
+                        {...formSubpunto.getInputProps('periodoFin')}
+                      />
+                    </Group>
 
-            <Group justify="flex-end" mt="md">
+                    {formSubpunto.values.periodoInicio instanceof Date && formSubpunto.values.periodoFin instanceof Date && (
+                      <Paper p="sm" withBorder radius="sm" style={{ backgroundColor: '#e7f5ff' }}>
+                        <Group gap="xs">
+                          <Badge color="blue" variant="light" size="lg">
+                            📆 {formSubpunto.values.periodoInicio.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' })}
+                          </Badge>
+                          <Text size="sm" c="dimmed">hasta</Text>
+                          <Badge color="blue" variant="light" size="lg">
+                            📆 {formSubpunto.values.periodoFin.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' })}
+                          </Badge>
+                        </Group>
+                      </Paper>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Select
+                      label="Duración del periodo"
+                      placeholder="Seleccione duración"
+                      required
+                      size="md"
+                      data={[
+                        { value: '1', label: `1 año (${new Date().getFullYear()})` },
+                        { value: '2', label: `2 años (${new Date().getFullYear()} - ${new Date().getFullYear() + 1})` },
+                      ]}
+                      {...formSubpunto.getInputProps('duracionAnios')}
+                    />
+
+                    <Paper p="sm" withBorder radius="sm" style={{ backgroundColor: '#e7f5ff' }}>
+                      <Group gap="xs">
+                        <Badge color="green" variant="light" size="lg">
+                          📆 Enero {new Date().getFullYear()}
+                        </Badge>
+                        <Text size="sm" c="dimmed">hasta</Text>
+                        <Badge color="green" variant="light" size="lg">
+                          📆 Diciembre {new Date().getFullYear() + parseInt(formSubpunto.values.duracionAnios || '1') - 1}
+                        </Badge>
+                      </Group>
+                    </Paper>
+                  </>
+                )}
+              </Stack>
+            </Paper>
+
+            <Group justify="flex-end" mt="lg">
               <Button
                 variant="default"
+                size="md"
                 onClick={() => {
                   setOpenedSubpunto(false);
                   formSubpunto.reset();
@@ -2527,7 +2723,7 @@ export function SGI() {
               >
                 Cancelar
               </Button>
-              <Button type="submit" color="#a1a23b">
+              <Button type="submit" color="#a1a23b" size="md">
                 {editingSubpunto ? 'Actualizar' : 'Crear'}
               </Button>
             </Group>

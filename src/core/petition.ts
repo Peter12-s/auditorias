@@ -235,13 +235,19 @@ export async function createPoint(companyUserId: number, name: string) {
   });
 }
 
-export async function createSubpoint(pointId: number, name: string, periodicity: 'monthly' | 'yearly') {
+export async function createSubpoint(
+  pointId: number, 
+  name: string, 
+  periodicity: 'monthly' | 'yearly',
+  auditPeriods?: { startMonth: number; startYear: number; endMonth: number; endYear: number }[]
+) {
   return BasicPetition({
     endpoint: `/templates/points/${pointId}/subpoints`,
     method: 'POST',
     data: {
       name,
       periodicity,
+      auditPeriods: auditPeriods || [],
     },
     showNotifications: true,
   });
@@ -258,10 +264,19 @@ export async function updatePoint(companyUserId: number, pointId: number, name: 
   });
 }
 
-export async function updateSubpoint(pointId: number, subpointId: number, name: string, periodicity?: 'monthly' | 'yearly') {
+export async function updateSubpoint(
+  pointId: number, 
+  subpointId: number, 
+  name: string, 
+  periodicity?: 'monthly' | 'yearly',
+  auditPeriods?: { startMonth: number; startYear: number; endMonth: number; endYear: number }[]
+) {
   const data: any = { name };
   if (periodicity) {
     data.periodicity = periodicity;
+  }
+  if (auditPeriods && auditPeriods.length > 0) {
+    data.auditPeriods = auditPeriods;
   }
   
   return BasicPetition({
