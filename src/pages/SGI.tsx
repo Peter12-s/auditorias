@@ -560,7 +560,7 @@ export function SGI() {
             version: index + 1, // La versión es el índice + 1
             descripcion: event.comment || `${status} - ${fileName}`,
             fecha,
-            usuarioNombre: event.user?.fullName || event.user?.name || getUserNameById(event.userId),
+            usuarioNombre: event.userFullName || event.user?.fullName || event.user?.name || getUserNameById(event.userId),
             usuarioRol: event.user?.role || status,
           };
         }) : [];
@@ -1538,7 +1538,7 @@ export function SGI() {
           version: index + 1, // La versión es el índice + 1
           descripcion: event.comment || `${status} - ${fileName}`,
           fecha,
-          usuarioNombre: event.user?.fullName || event.user?.name || getUserNameById(event.userId),
+          usuarioNombre: event.userFullName || event.user?.fullName || event.user?.name || getUserNameById(event.userId),
           usuarioRol: event.user?.role || status,
         };
       }) : [];
