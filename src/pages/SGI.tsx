@@ -30,7 +30,7 @@ import {
 import { MonthPickerInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
 import { showNotification } from '@mantine/notifications';
-import { FaPlus, FaEdit, FaTrash, FaChevronDown, FaCheck, FaTimes, FaFileUpload, FaSearchPlus, FaSearchMinus, FaEye } from 'react-icons/fa';
+import { FaPlus, FaEdit, FaTrash, FaChevronDown, FaCheck, FaTimes, FaFileUpload, FaSearchPlus, FaSearchMinus, FaEye, FaSearch } from 'react-icons/fa';
 import { useAuth } from '../AuthContext';
 import { BasicPetition, createPoint, createSubpoint, updatePoint, updateSubpoint, deletePoint, sendMessage, getMessages, uploadAuditFile, replaceAuditFile, getLatestAuditFile, getAuditFileChanges } from '../core/petition';
 import { UserRole, getRoleLabel } from '../core/constants';
@@ -183,6 +183,7 @@ export function SGI() {
   const [activeTab, setActiveTab] = useState<string>('configuracion');
   
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchPuntoQuery, setSearchPuntoQuery] = useState('');
   const [openedPunto, setOpenedPunto] = useState(false);
   const [openedSubpunto, setOpenedSubpunto] = useState(false);
   const [openedConfirm, setOpenedConfirm] = useState(false);
@@ -2046,6 +2047,56 @@ export function SGI() {
             </Paper>
           ) : (
             <Stack gap="md">
+              {/* 🔍 BUSCADOR DE PUNTOS PARA EMPRESA */}
+              <Input
+                placeholder="Buscar punto..."
+                value={searchPuntoQuery}
+                onChange={(e) => setSearchPuntoQuery(e.currentTarget.value)}
+                size="md"
+                leftSection={<FaSearch size={14} />}
+              />
+
+              {/* BARRA DE PROGRESO GENERAL */}
+              {(() => {
+                const totalSubpuntos = empresas[0].puntos.reduce(
+                  (sum, punto) => sum + punto.subpuntos.length,
+                  0
+                );
+                const subpuntosConArchivo = empresas[0].puntos.reduce(
+                  (sum, punto) => sum + punto.subpuntos.filter((s) => s.archivoCargado).length,
+                  0
+                );
+                const progreso = totalSubpuntos > 0 ? (subpuntosConArchivo / totalSubpuntos) * 100 : 0;
+
+                return (
+                  <Paper p="md" withBorder style={{ backgroundColor: '#f0f9ff', borderColor: '#74c0fc' }}>
+                    <Stack gap="xs">
+                      <Group justify="space-between">
+                        <Text size="sm" fw={600} c="blue.7">
+                          Progreso General de Documentación
+                        </Text>
+                        <Badge size="lg" color={progreso === 100 ? 'green' : progreso > 50 ? 'blue' : 'orange'}>
+                          {subpuntosConArchivo} / {totalSubpuntos} completados
+                        </Badge>
+                      </Group>
+                      <Progress
+                        value={progreso}
+                        size="lg"
+                        radius="xl"
+                        color={progreso === 100 ? 'green' : progreso > 50 ? 'blue' : 'orange'}
+                        striped={progreso < 100}
+                        animated={progreso < 100 && progreso > 0}
+                      />
+                      <Text size="xs" c="dimmed" ta="center">
+                        {progreso === 100
+                          ? '✅ ¡Todos los documentos han sido cargados!'
+                          : `${Math.round(progreso)}% completado - Faltan ${totalSubpuntos - subpuntosConArchivo} subpuntos por cargar`}
+                      </Text>
+                    </Stack>
+                  </Paper>
+                );
+              })()}
+
               <Paper p="md" withBorder style={{ backgroundColor: '#f8f9fa' }}>
                 <Stack gap="sm">
                   <Text size="sm" fw={600} c="dimmed">Auditores Asignados:</Text>
@@ -2066,37 +2117,56 @@ export function SGI() {
                 </Stack>
               </Paper>
 
-              {empresas[0].puntos.length === 0 ? (
-                <Paper p="xl" withBorder style={{ backgroundColor: '#f8f9fa' }}>
-                  <Text c="dimmed" ta="center" py="xl">
-                    No hay puntos registrados para tu empresa
-                  </Text>
-                </Paper>
-              ) : (
-                <Accordion
-                  chevronPosition="right"
-                  defaultValue={null}
-                  styles={{
-                    chevron: {
-                      fontSize: 16,
-                      marginRight: 0,
-                    }
-                  }}
-                >
-                  {empresas[0].puntos.map((punto) => (
-                    <Accordion.Item
-                      key={punto.id}
-                      value={punto.id}
-                      style={{
-                        backgroundColor: '#e8eaa6',
-                        border: '1px solid #d4d68f',
-                        marginBottom: 8,
-                        borderRadius: 6,
-                      }}
-                    >
-                      <Accordion.Control
+              {(() => {
+                const puntosFiltrados = empresas[0].puntos.filter((punto) =>
+                  punto.nombre.toLowerCase().includes(searchPuntoQuery.toLowerCase())
+                );
+
+                if (empresas[0].puntos.length === 0) {
+                  return (
+                    <Paper p="xl" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+                      <Text c="dimmed" ta="center" py="xl">
+                        No hay puntos registrados para tu empresa
+                      </Text>
+                    </Paper>
+                  );
+                }
+
+                if (puntosFiltrados.length === 0) {
+                  return (
+                    <Paper p="xl" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+                      <Text c="dimmed" ta="center" py="xl">
+                        No se encontraron puntos que coincidan con "{searchPuntoQuery}"
+                      </Text>
+                    </Paper>
+                  );
+                }
+
+                return (
+                  <Accordion
+                    chevronPosition="right"
+                    defaultValue={null}
+                    styles={{
+                      chevron: {
+                        fontSize: 16,
+                        marginRight: 0,
+                      }
+                    }}
+                  >
+                    {puntosFiltrados.map((punto) => (
+                      <Accordion.Item
+                        key={punto.id}
+                        value={punto.id}
                         style={{
-                          padding: '12px 14px',
+                          backgroundColor: '#e8eaa6',
+                          border: '1px solid #d4d68f',
+                          marginBottom: 8,
+                          borderRadius: 6,
+                        }}
+                      >
+                        <Accordion.Control
+                          style={{
+                            padding: '12px 14px',
                         }}
                       >
                         <Stack gap={4} style={{ flex: 1 }}>
@@ -2169,8 +2239,9 @@ export function SGI() {
                       </Accordion.Panel>
                     </Accordion.Item>
                   ))}
-                </Accordion>
-              )}
+                  </Accordion>
+                );
+              })()}
             </Stack>
           )}
         </Stack>

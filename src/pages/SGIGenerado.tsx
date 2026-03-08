@@ -12,9 +12,10 @@ import {
   FileInput,
   Button,
   Box,
+  TextInput,
 } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
-import { FaChevronDown, FaFileUpload, FaDownload } from 'react-icons/fa';
+import { FaChevronDown, FaFileUpload, FaDownload, FaSearch } from 'react-icons/fa';
 import { useAuth } from '../AuthContext';
 import JSZip from 'jszip';
 
@@ -249,6 +250,12 @@ export function SGIGenerado() {
   const [uploadingFile, setUploadingFile] = useState(false);
   const [downloadingZip, setDownloadingZip] = useState(false);
   const [empresas] = useState<EmpresaGenerada[]>(empresasDummy);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  // Filtrar empresas por término de búsqueda
+  const empresasFiltradas = empresas.filter((empresa) =>
+    empresa.nombre.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
   // Descargar todos los archivos de una empresa en ZIP
   const handleDescargarEmpresaZip = async (empresa: EmpresaGenerada) => {
@@ -348,9 +355,19 @@ export function SGIGenerado() {
         Sistema de gestión por periodos.
       </Text>
 
+      {/* BUSCADOR DE EMPRESAS */}
+      <TextInput
+        placeholder="Buscar empresa..."
+        leftSection={<FaSearch size={14} />}
+        value={searchTerm}
+        onChange={(e) => setSearchTerm(e.currentTarget.value)}
+        mb="lg"
+        size="md"
+      />
+
       {/* LISTA DE EMPRESAS */}
       <Stack gap="md">
-        {empresas.map((empresa) => (
+        {empresasFiltradas.map((empresa) => (
           <Paper key={empresa.id} shadow="sm" p="md" radius="md" withBorder>
             <Accordion>
               <Accordion.Item value={empresa.id}>
@@ -555,10 +572,12 @@ export function SGIGenerado() {
           </Paper>
         ))}
 
-        {empresas.length === 0 && (
+        {empresasFiltradas.length === 0 && (
           <Paper p="xl" withBorder>
             <Text c="dimmed" ta="center">
-              No hay empresas configuradas en el sistema
+              {searchTerm
+                ? `No se encontraron empresas que coincidan con "${searchTerm}"`
+                : 'No hay empresas configuradas en el sistema'}
             </Text>
           </Paper>
         )}
