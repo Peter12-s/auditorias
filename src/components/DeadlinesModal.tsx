@@ -116,22 +116,17 @@ export function DeadlinesModal({ opened, onClose, companyUserId }: DeadlinesModa
   const [error, setError] = useState<string | null>(null);
 
   // Log cada vez que el componente renderiza
-  console.log('🎯 DeadlinesModal RENDER:', { opened, companyUserId, loading, error });
 
   useEffect(() => {
-    console.log('📋 DeadlinesModal useEffect TRIGGER:', { opened, companyUserId });
     if (opened && companyUserId) {
-      console.log('✅ Condición cumplida, llamando fetchDeadlines');
       fetchDeadlines();
     } else {
-      console.log('❌ Condición NO cumplida:', { opened, companyUserId });
     }
   }, [opened, companyUserId]);
 
   const fetchDeadlines = async () => {
     if (!companyUserId) return;
 
-    console.log('📡 Fetching deadlines for company:', companyUserId);
     setLoading(true);
     setError(null);
 
@@ -141,13 +136,11 @@ export function DeadlinesModal({ opened, onClose, companyUserId }: DeadlinesModa
         method: 'GET',
       });
 
-      console.log('📥 Deadlines response:', response);
 
       if (response && typeof response === 'object') {
         setDeadlines(response as DeadlinesResponse);
       }
     } catch (err) {
-      console.error('Error al cargar deadlines:', err);
       setError('No se pudieron cargar los plazos de entrega');
     } finally {
       setLoading(false);

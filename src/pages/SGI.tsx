@@ -477,7 +477,6 @@ export function SGI() {
         );
       } catch (error: any) {
         if (error?.status !== 404 && error?.statusCode !== 404) {
-          console.error('❌ Error cargando archivo más reciente del subpunto:', error);
         }
       }
     };
@@ -519,7 +518,6 @@ export function SGI() {
           prev ? { ...prev, mensajes: messages } : null
         );
       } catch (error) {
-        console.error('❌ Error cargando mensajes:', error);
       }
     };
     
@@ -545,10 +543,7 @@ export function SGI() {
         const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
         if (!templateSubpointId) return;
 
-        console.log('📋 Cargando cambios desde backend para templateSubpoint:', templateSubpointId);
         const response = await getAuditFileChanges(templateSubpointId);
-        
-        console.log('📋 Respuesta completa del backend:', response);
 
         // Mapear respuesta del backend a la estructura de Cambio
         // El backend devuelve { events: [...] }
@@ -573,13 +568,11 @@ export function SGI() {
           };
         }) : [];
 
-        console.log('✅ Cambios mapeados:', cambios);
 
         setViewingSubpunto((prev) =>
           prev ? { ...prev, cambios } : null
         );
       } catch (error) {
-        console.error('❌ Error cargando cambios:', error);
       }
     };
 
@@ -642,12 +635,9 @@ export function SGI() {
       empresasCargadasRef.current = true;
       
       try {
-        console.log('🔑 Token disponible:', !!localStorage.getItem('access_token') || !!localStorage.getItem('mi_app_token'));
-        console.log('🔐 UserType:', auth?.userType, 'UserID:', auth?.userId);
         
         // Si es Empresa, solo cargar datos de su propia empresa
         if (auth?.userType === 'Empresa' && auth?.userId) {
-          console.log('👤 Usuario Empresa detectado, cargando datos de su empresa:', auth.userId);
           
           // Crear una empresa con su ID
           const empresaData: Empresa = {
@@ -675,7 +665,6 @@ export function SGI() {
             showNotifications: false,
           });
           
-          console.log('📋 Respuesta de empresas:', response, 'Tipo:', typeof response);
           
           if (response && Array.isArray(response)) {
             // Mapear respuesta de la API a la estructura Empresa
@@ -688,14 +677,11 @@ export function SGI() {
               puntos: [],
             }));
             
-            console.log('✅ Empresas mapeadas:', empresasFromAPI.length, empresasFromAPI);
             setEmpresas(empresasFromAPI);
           } else {
-            console.log('⚠️ Respuesta no es un array:', response);
           }
         }
       } catch (error) {
-        console.error('❌ Error cargando empresas:', error);
         showNotification({
           title: 'Error al cargar empresas',
           message: error instanceof Error ? error.message : 'No se pudieron cargar las empresas',
@@ -706,7 +692,6 @@ export function SGI() {
     };
     
     if (!empresasCargadasRef.current) {
-      console.log('👤 Iniciando carga de empresas...');
       loadEmpresas();
     }
   }, [auth]);
@@ -794,7 +779,6 @@ export function SGI() {
     if (editingPunto) {
       // Editar punto existente con PATCH
       try {
-        console.log('✏️ Actualizando punto:', editingPunto.punto.id);
         await updatePoint(parseInt(editingPunto.empresaId), parseInt(editingPunto.punto.id), values.nombre);
 
         setEmpresas((prev) =>
@@ -814,9 +798,7 @@ export function SGI() {
           message: 'El punto se actualizó correctamente',
           color: 'green',
         });
-      } catch (error) {
-        console.error('❌ Error actualizando punto:', error);
-        showNotification({
+      } catch (error) {        showNotification({
           title: 'Error',
           message: 'No se pudo actualizar el punto',
           color: 'red',
@@ -825,10 +807,8 @@ export function SGI() {
     } else {
       // Crear nuevo punto con POST al API
       try {
-        console.log('🆕 Creando punto para empresa:', selectedEmpresa);
         const response = await createPoint(parseInt(selectedEmpresa), values.nombre);
 
-        console.log('✅ Punto creado:', response);
 
         // Recargar puntos después de crear
         await handleLoadPuntos(selectedEmpresa);
@@ -839,7 +819,6 @@ export function SGI() {
           color: 'green',
         });
       } catch (error) {
-        console.error('❌ Error creando punto:', error);
         showNotification({
           title: 'Error',
           message: 'No se pudo crear el punto',
@@ -875,7 +854,6 @@ export function SGI() {
           });
         })
         .catch((error) => {
-          console.error('❌ Error eliminando punto:', error);
           showNotification({
             title: 'Error',
             message: 'No se pudo eliminar el punto',
@@ -968,7 +946,6 @@ export function SGI() {
     if (editingSubpunto) {
       // Editar subpunto existente con PATCH
       try {
-        console.log('✏️ Actualizando subpunto:', editingSubpunto.subpunto.id);
         await updateSubpoint(
           parseInt(editingSubpunto.puntoId),
           parseInt(editingSubpunto.subpunto.id),
@@ -1009,7 +986,6 @@ export function SGI() {
           color: 'green',
         });
       } catch (error) {
-        console.error('❌ Error actualizando subpunto:', error);
         showNotification({
           title: 'Error',
           message: 'No se pudo actualizar el subpunto',
@@ -1019,7 +995,6 @@ export function SGI() {
     } else {
       // Crear nuevo subpunto con POST al API
       try {
-        console.log('🆕 Creando subpunto para punto:', selectedPunto);
 
         const response = await createSubpoint(
           parseInt(selectedPunto),
@@ -1027,8 +1002,6 @@ export function SGI() {
           periodicity,
           auditPeriods
         );
-
-        console.log('✅ Subpunto creado:', response);
 
         // Actualizar estado local
         setEmpresas((prev) =>
@@ -1072,7 +1045,6 @@ export function SGI() {
           color: 'green',
         });
       } catch (error) {
-        console.error('❌ Error creando subpunto:', error);
         showNotification({
           title: 'Error',
           message: 'No se pudo crear el subpunto',
@@ -1117,21 +1089,18 @@ export function SGI() {
 
   // 👥 GESTIÓN DE AUDITORES - ABRIR MODAL
   const handleOpenAuditores = async (empresaId: string) => {
-    console.log('📋 Abriendo modal de auditores para empresa:', empresaId);
     setSelectedEmpresaForAuditores(empresaId);
     setOpenedAuditores(true);
     
     // Cargar lista completa de auditores para el modal
     setLoadingAuditores(true);
     try {
-      console.log('🔄 Llamando a /templates/auditors con companyUserId:', empresaId);
       const response = await BasicPetition({
         endpoint: `/templates/auditors?companyUserId=${empresaId}`,
         method: 'GET',
         showNotifications: false,
       });
 
-      console.log('✅ Respuesta de auditores:', response);
 
       if (response && Array.isArray(response)) {
         const auditoresFromAPI = response.map((auditor: any) => ({
@@ -1145,11 +1114,9 @@ export function SGI() {
           assignedCompaniesCount: auditor.assignedCompaniesCount,
           isAssignedToCompany: auditor.isAssignedToCompany,
         }));
-        console.log('👥 Auditores procesados:', auditoresFromAPI.length);
         setAuditores(auditoresFromAPI);
       }
     } catch (error) {
-      console.error('❌ Error cargando auditores:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudieron cargar los auditores',
@@ -1162,7 +1129,6 @@ export function SGI() {
 
   // � CARGAR AUDITORES PARA UNA EMPRESA (sin abrir modal)
   const handleLoadAuditores = async (empresaId: string) => {
-    console.log('👥 Cargando auditores para empresa:', empresaId);
     try {
       const response = await BasicPetition({
         endpoint: `/templates/auditors?companyUserId=${empresaId}`,
@@ -1198,7 +1164,6 @@ export function SGI() {
           .filter((auditor: any) => auditor.isAssignedToCompany)
           .map((auditor: any) => String(auditor.auditorUserId));
         
-        console.log('✅ Auditores asignados:', auditoresAsignados.length);
 
         // Actualizar el estado de empresas con los auditores asignados
         setEmpresas((prev) =>
@@ -1210,7 +1175,6 @@ export function SGI() {
         );
       }
     } catch (error) {
-      console.error('❌ Error cargando auditores:', error);
     }
   };
 
@@ -1218,11 +1182,9 @@ export function SGI() {
   const handleLoadEmpresaData = async (empresaId: string) => {
     // Si ya tiene datos cargados, no volver a cargar
     if (empresasConDatos.has(empresaId)) {
-      console.log('✅ Empresa ya tiene datos cargados:', empresaId);
       return;
     }
 
-    console.log('🔄 Cargando datos completos para empresa:', empresaId);
 
     // Marcar empresa como cargando
     setEmpresasCargando((prev) => new Set([...prev, empresaId]));
@@ -1237,9 +1199,7 @@ export function SGI() {
 
       // Marcar empresa como cargada
       setEmpresasConDatos((prev) => new Set([...prev, empresaId]));
-      console.log('✅ Datos completos cargados para empresa:', empresaId);
     } catch (error) {
-      console.error('❌ Error cargando datos de empresa:', error);
     } finally {
       // Quitar empresa de la lista de cargando
       setEmpresasCargando((prev) => {
@@ -1253,14 +1213,12 @@ export function SGI() {
   // 📊 CARGAR ESTADÍSTICAS DE SUBPUNTOS
   const handleLoadSubpointStats = async (empresaId: string) => {
     try {
-      console.log('📊 Cargando estadísticas de subpuntos para empresa:', empresaId);
       const response = await BasicPetition({
         endpoint: `/templates/companies/${empresaId}/subpoints/stats`,
         method: 'GET',
         showNotifications: false,
       });
 
-      console.log('✅ Estadísticas de subpuntos:', response);
 
       if (response && typeof response.totalSubpoints === 'number') {
         setEmpresas((prev) =>
@@ -1276,7 +1234,6 @@ export function SGI() {
         );
       }
     } catch (error) {
-      console.error('❌ Error cargando estadísticas de subpuntos:', error);
     }
   };
 
@@ -1290,17 +1247,14 @@ export function SGI() {
         showNotifications: false,
       });
 
-      console.log('✅ Subpuntos cargados para punto:', pointId, response);
 
       return Array.isArray(response) ? response : [];
     } catch (error) {
-      console.error('❌ Error cargando subpuntos para punto:', pointId, error);
       return [];
     }
   };
   // �📋 CARGAR PUNTOS DE UNA EMPRESA
   const handleLoadPuntos = async (empresaId: string) => {
-    console.log('📋 Cargando puntos para empresa:', empresaId);
     try {
       const response = await BasicPetition({
         endpoint: `/templates/companies/${empresaId}/points`,
@@ -1308,7 +1262,6 @@ export function SGI() {
         showNotifications: false,
       });
 
-      console.log('✅ Respuesta de puntos:', response);
 
       if (response && Array.isArray(response)) {
         // Cargar subpuntos para cada punto en paralelo
@@ -1339,7 +1292,6 @@ export function SGI() {
           })
         );
 
-        console.log('📋 Puntos con subpuntos procesados:', puntosWithSubpoints.length);
 
         // Actualizar empresa con los puntos y subpuntos cargados
         setEmpresas((prev) =>
@@ -1351,7 +1303,6 @@ export function SGI() {
         );
       }
     } catch (error) {
-      console.error('❌ Error cargando puntos:', error);
     }
   };
 
@@ -1365,10 +1316,7 @@ export function SGI() {
     try {
       if (isCurrentlyAssigned) {
         // DESASIGNAR - usar PATCH /deactivate
-        console.log('🔴 Desasignando auditor:', {
-          auditorUserId: Number(auditorId),
-          companyUserId: Number(selectedEmpresaForAuditores)
-        });
+    
 
         await BasicPetition({
           endpoint: '/templates/auditor-company-assignments/deactivate',
@@ -1387,10 +1335,7 @@ export function SGI() {
         });
       } else {
         // ASIGNAR - usar POST
-        console.log('🟢 Asignando auditor:', {
-          auditorUserId: Number(auditorId),
-          companyUserId: Number(selectedEmpresaForAuditores)
-        });
+  
 
         await BasicPetition({
           endpoint: '/templates/auditor-company-assignments',
@@ -1425,7 +1370,6 @@ export function SGI() {
       );
 
     } catch (error) {
-      console.error('❌ Error en toggle auditor:', error);
       showNotification({
         title: 'Error',
         message: isCurrentlyAssigned ? 'No se pudo desasignar el auditor' : 'No se pudo asignar el auditor',
@@ -1437,11 +1381,6 @@ export function SGI() {
   // � DESACTIVAR AUDITOR DE UNA EMPRESA
   const handleDesactivarAuditor = async (auditorUserId: number, empresaId: string) => {
     try {
-      console.log('🔴 Desactivando auditor:', {
-        auditorUserId,
-        companyUserId: Number(empresaId)
-      });
-
       await BasicPetition({
         endpoint: '/templates/auditor-company-assignments/deactivate',
         method: 'PATCH',
@@ -1451,9 +1390,6 @@ export function SGI() {
         },
         showNotifications: false,
       });
-
-      console.log('✅ Auditor desactivado correctamente');
-
       // Actualizar estado local
       setEmpresas((prev) =>
         prev.map((empresa) => {
@@ -1473,7 +1409,6 @@ export function SGI() {
         color: 'orange',
       });
     } catch (error) {
-      console.error('❌ Error desactivando auditor:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo desactivar el auditor',
@@ -1490,10 +1425,6 @@ export function SGI() {
       // Mapear periodicidad a valores de API
       const periodicity = mapPeriodicityToAPI(tempPeriodicidad);
       
-      console.log('📅 Actualizando periodicidad del subpunto:', {
-        subpointId: viewingSubpunto.id,
-        periodicity: periodicity
-      });
 
       await updateSubpoint(parseInt(viewingContext.puntoId), parseInt(viewingSubpunto.id), viewingSubpunto.nombre, periodicity);
 
@@ -1529,7 +1460,6 @@ export function SGI() {
         color: 'green',
       });
     } catch (error) {
-      console.error('❌ Error actualizando periodicidad:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo actualizar la periodicidad',
@@ -1546,10 +1476,8 @@ export function SGI() {
       const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
       if (!templateSubpointId) return;
 
-      console.log('📋 Recargando cambios desde backend para templateSubpoint:', templateSubpointId);
       const response = await getAuditFileChanges(templateSubpointId);
       
-      console.log('📋 Respuesta completa del backend:', response);
 
       // Mapear respuesta del backend a la estructura de Cambio
       // El backend devuelve { events: [...] }
@@ -1574,13 +1502,11 @@ export function SGI() {
         };
       }) : [];
 
-      console.log('✅ Cambios recargados:', cambios);
 
       setViewingSubpunto((prev) =>
         prev ? { ...prev, cambios } : null
       );
     } catch (error) {
-      console.error('❌ Error recargando cambios:', error);
     }
   };
 
@@ -1623,7 +1549,6 @@ export function SGI() {
     setUploadingFile(true);
 
     try {
-      console.log('📤 Subiendo archivo inicial:', file.name, 'para templateSubpoint:', templateSubpointId);
       
       // Usar endpoint normal de upload
       const uploadResponse = await uploadAuditFile(templateSubpointId, file);
@@ -1668,7 +1593,6 @@ export function SGI() {
         color: 'green',
       });
     } catch (error) {
-      console.error('❌ Error al subir archivo:', error);
     } finally {
       setUploadingFile(false);
     }
@@ -1702,7 +1626,6 @@ export function SGI() {
     setOpenedCommentModal(false);
 
     try {
-      console.log('🔄 Actualizando archivo:', pendingFileForUpdate.name, 'con comentario:', commentForUpdate);
       
       // Usar endpoint de replacement
       const uploadResponse = await replaceAuditFile(templateSubpointId, pendingFileForUpdate, commentForUpdate);
@@ -1754,7 +1677,6 @@ export function SGI() {
       setPendingFileForUpdate(null);
       setCommentForUpdate('');
     } catch (error) {
-      console.error('❌ Error al actualizar archivo:', error);
     } finally {
       setUploadingFile(false);
     }
@@ -2038,7 +1960,6 @@ export function SGI() {
 
       setNuevoMensaje('');
     } catch (error) {
-      console.error('❌ Error enviando mensaje:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo enviar el mensaje',

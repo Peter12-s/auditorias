@@ -30,13 +30,6 @@ export function AppLayout() {
   const [userType, setUserType] = useState<string>('');
   const [userId, setUserId] = useState<string>('');
 
-  // Log al montar
-  console.log('🏠 AppLayout montado, auth:', { 
-    userType: auth.userType, 
-    userId: auth.userId, 
-    isAuthenticated: auth.isAuthenticated 
-  });
-
   const refreshSignedPhotoUrl = async (targetUserId?: string) => {
     const id = targetUserId || userId || auth.userId || '';
     if (!id) return;
@@ -124,25 +117,14 @@ export function AppLayout() {
     const id = auth.userId || userId;
     const alreadyShown = getDeadlinesShown();
 
-    console.log('🔍 DeadlinesModal check:', { 
-      rawType, 
-      normalizedType, 
-      isEmpresa, 
-      id, 
-      authUserId: auth.userId,
-      localUserId: userId,
-      shown: alreadyShown 
-    });
+
 
     // Solo mostrar una vez por sesión y cuando tengamos el ID
     if (isEmpresa && id && !alreadyShown) {
-      console.log('✅ Abriendo modal de deadlines para empresa:', id);
       // Pequeño delay para que cargue la interfaz primero
       const timer = setTimeout(() => {
-        console.log('⏰ Ejecutando setTimeout para abrir modal, id:', id);
         setDeadlinesModalOpened(true);
         setDeadlinesShown(true); // Marcar como mostrado DESPUÉS de abrir
-        console.log('📌 deadlinesModalOpened ahora debe ser true');
       }, 800);
       return () => clearTimeout(timer);
     }
@@ -215,7 +197,6 @@ export function AppLayout() {
 
   // 💾 GUARDAR FOTO DE PERFIL
   const handleUploadPhoto = async () => {
-    console.log('handleUploadPhoto - photoFile:', photoFile, 'userId:', userId);
     
     if (!photoFile) {
       showNotification({

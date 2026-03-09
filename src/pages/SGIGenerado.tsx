@@ -378,7 +378,6 @@ export function SGIGenerado() {
         ));
       }
     } catch (error) {
-      console.error('Error al cargar períodos:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudieron cargar los períodos de auditoría',
@@ -429,7 +428,6 @@ export function SGIGenerado() {
           setEmpresas(empresasTransformadas);
         }
       } catch (error) {
-        console.error('Error al cargar empresas:', error);
         showNotification({
           title: 'Error',
           message: 'No se pudieron cargar las empresas',
@@ -483,7 +481,6 @@ export function SGIGenerado() {
         });
       }
     } catch (error) {
-      console.error('Error al descargar ZIP:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo descargar el archivo ZIP',
@@ -523,7 +520,6 @@ export function SGIGenerado() {
       // Recargar los períodos de la empresa
       loadCompanyPeriods(companyUserId);
     } catch (error) {
-      console.error('Error al subir archivo:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo subir el archivo',
@@ -559,7 +555,6 @@ export function SGIGenerado() {
       // Recargar los períodos de la empresa
       loadCompanyPeriods(companyUserId);
     } catch (error) {
-      console.error('Error al eliminar archivo:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo eliminar el archivo',
@@ -596,7 +591,6 @@ export function SGIGenerado() {
         });
       }
     } catch (error) {
-      console.error('Error al obtener archivo:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo obtener el archivo',
@@ -621,7 +615,6 @@ export function SGIGenerado() {
 
       setAlertReport(response);
     } catch (error) {
-      console.error('Error al generar reporte:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo generar el reporte de alertas',

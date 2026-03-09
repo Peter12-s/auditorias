@@ -104,11 +104,9 @@ export async function BasicPetition({
   try {
     const response = await fetch(`${API_BASE_URL}${endpoint}`, config);
     
-    console.log(`🔍 Response status: ${response.status}, Content-Type: ${response.headers.get('content-type')}, URL: ${endpoint}`);
     
     // Manejar 304 Not Modified - retornar array vacío
     if (response.status === 304) {
-      console.log('📦 Respuesta 304 Not Modified, retornando array vacío');
       return [];
     }
     
@@ -118,13 +116,7 @@ export async function BasicPetition({
     
     if (!isJson) {
       const responseText = await response.text();
-      console.error('❌ Respuesta no-JSON recibida:', {
-        status: response.status,
-        statusText: response.statusText,
-        contentType,
-        responseText: responseText.substring(0, 300),
-        url: `${API_BASE_URL}${endpoint}`,
-      });
+   
       
       // Si es un error, mostrar el estado HTTP
       if (!response.ok) {
@@ -132,7 +124,6 @@ export async function BasicPetition({
       }
       
       // Si es OK pero no es JSON, asumir que es un array vacío
-      console.warn('⚠️ Respuesta OK pero no es JSON, retornando array vacío');
       return [];
     }
     

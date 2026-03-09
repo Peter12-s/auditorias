@@ -292,7 +292,6 @@ export function Login() {
           (login.user as any)?.photoUrl ??
           (login.user as any)?.photo_url;
 
-        console.log('📸 PhotoUrl extraído:', photoUrl);
 
         saveUserData(userId, displayName, photoUrl);
 
