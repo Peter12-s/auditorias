@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Container,
   Title,
@@ -8,16 +8,16 @@ import {
   Paper,
   Text,
   Badge,
-  Divider,
   FileInput,
   Button,
   Box,
   TextInput,
   Loader,
   Center,
+  Tooltip,
 } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
-import { FaChevronDown, FaFileUpload, FaDownload, FaSearch } from 'react-icons/fa';
+import { FaChevronDown, FaFileUpload, FaDownload, FaSearch, FaTrash } from 'react-icons/fa';
 import { useAuth } from '../AuthContext';
 import JSZip from 'jszip';
 import { BasicPetition } from '../core/petition';
@@ -30,10 +30,16 @@ interface Periodo {
   id: string;
   nombre: string; // "Enero 2026", "Semana 1 Enero 2026"
   fechaLimite: string; // Fecha en formato ISO
-  estado: 'pendiente' | 'cargado' | 'vencido';
+  estado: 'pendiente' | 'cargado' | 'vencido' | 'futuro';
   archivoUrl?: string;
   archivoNombre?: string;
   fechaCarga?: string;
+  isOnTime?: boolean | null;
+  auditFileId?: number | null;
+  disabled?: boolean;
+  templateSubpointId?: number;
+  periodYear?: number;
+  periodMonth?: number | null;
 }
 
 interface SubpuntoGenerado {
@@ -71,6 +77,44 @@ interface CompanyFromAPI {
   subpointsStats: SubpointsStats;
 }
 
+// Interfaces para la respuesta del API de audit-periods/tree
+interface FileFromAPI {
+  originalName: string;
+}
+
+interface PeriodFromAPI {
+  periodYear: number;
+  periodMonth: number | null;
+  hasActiveFile: boolean;
+  auditFileId: number | null;
+  uploadedAt: string | null;
+  dueAt: string;
+  isOnTime: boolean | null;
+  file?: FileFromAPI | null;
+}
+
+interface AuditPeriodFromAPI {
+  id: number;
+  startYear: number;
+  startMonth: number;
+  endYear: number;
+  endMonth: number;
+  periods: PeriodFromAPI[];
+}
+
+interface SubpointFromAPI {
+  templateSubpointId: number;
+  templateSubpointName: string;
+  periodicity: 'monthly' | 'yearly';
+  auditPeriods: AuditPeriodFromAPI[];
+}
+
+interface PointFromAPI {
+  templatePointId: number;
+  templatePointName: string;
+  subpoints: SubpointFromAPI[];
+}
+
 interface EmpresaGenerada {
   id: string;
   nombre: string;
@@ -81,11 +125,18 @@ interface EmpresaGenerada {
   isActive?: boolean;
   profile?: CompanyProfile;
   subpointsStats?: SubpointsStats;
+  loadingPeriods?: boolean;
+  periodsLoaded?: boolean;
 }
 
 // ==========================================
 // FUNCIONES HELPER
 // ==========================================
+
+const MONTH_NAMES = [
+  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+];
 
 const getEstadoColor = (estado: string) => {
   switch (estado) {
@@ -93,6 +144,8 @@ const getEstadoColor = (estado: string) => {
       return { bg: '#ffe0e0', border: '#fa5252', badge: 'red' };
     case 'cargado':
       return { bg: '#d3f9d8', border: '#37b24d', badge: 'green' };
+    case 'futuro':
+      return { bg: '#e9ecef', border: '#adb5bd', badge: 'gray' };
     case 'pendiente':
     default:
       return { bg: '#fff4e0', border: '#fab005', badge: 'yellow' };
@@ -105,6 +158,8 @@ const getEstadoIcon = (estado: string) => {
       return '❌';
     case 'cargado':
       return '✅';
+    case 'futuro':
+      return '🔒';
     case 'pendiente':
     default:
       return '📤';
@@ -117,6 +172,8 @@ const getEstadoTexto = (estado: string) => {
       return 'VENCIDO';
     case 'cargado':
       return 'Cargado';
+    case 'futuro':
+      return 'Próximo';
     case 'pendiente':
     default:
       return 'Pendiente';
@@ -142,8 +199,176 @@ export function SGIGenerado() {
   const [empresas, setEmpresas] = useState<EmpresaGenerada[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [expandedEmpresa, setExpandedEmpresa] = useState<string | null>(null);
 
-  // Cargar empresas desde el API
+  // Función para obtener el nombre del período
+  const getPeriodName = (period: PeriodFromAPI, periodicity: string): string => {
+    if (periodicity === 'yearly') {
+      return `Año ${period.periodYear}`;
+    }
+    const monthName = period.periodMonth ? MONTH_NAMES[period.periodMonth - 1] : '';
+    return `${monthName} ${period.periodYear}`;
+  };
+
+  // Función para determinar el estado del período
+  const getPeriodState = (period: PeriodFromAPI): 'pendiente' | 'cargado' | 'vencido' | 'futuro' => {
+    const today = new Date();
+    const dueDate = new Date(period.dueAt);
+    
+    if (period.hasActiveFile) {
+      return 'cargado';
+    }
+    
+    // Si la fecha de vencimiento ya pasó y no hay archivo
+    if (dueDate < today && !period.hasActiveFile) {
+      return 'vencido';
+    }
+    
+    return 'pendiente';
+  };
+
+  // Función para filtrar períodos según las reglas
+  const filterPeriods = (periods: PeriodFromAPI[], periodicity: string): { period: PeriodFromAPI; disabled: boolean }[] => {
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth() + 1; // 1-12
+    
+    const result: { period: PeriodFromAPI; disabled: boolean }[] = [];
+    
+    if (periodicity === 'yearly') {
+      // Para anuales: mostrar solo el del año actual y vencidos de años anteriores
+      periods.forEach(period => {
+        const dueDate = new Date(period.dueAt);
+        const isExpired = dueDate < today && !period.hasActiveFile;
+        const isCurrentYear = period.periodYear === currentYear;
+        const hasFile = period.hasActiveFile;
+        
+        if (isExpired || isCurrentYear || hasFile) {
+          result.push({ period, disabled: false });
+        }
+      });
+    } else {
+      // Para mensuales: mostrar vencidos, actual, y 2 futuros deshabilitados
+      let futureCount = 0;
+      const maxFuture = 2;
+      
+      periods.forEach(period => {
+        const periodDate = new Date(period.periodYear, (period.periodMonth || 1) - 1);
+        const currentDate = new Date(currentYear, currentMonth - 1);
+        const dueDate = new Date(period.dueAt);
+        
+        const isExpired = dueDate < today && !period.hasActiveFile;
+        const isCurrent = period.periodYear === currentYear && period.periodMonth === currentMonth;
+        const isPast = periodDate < currentDate;
+        const isFuture = periodDate > currentDate;
+        const hasFile = period.hasActiveFile;
+        
+        if (isExpired || hasFile) {
+          // Mostrar todos los vencidos y los que tienen archivo
+          result.push({ period, disabled: false });
+        } else if (isPast || isCurrent) {
+          // Período actual o pasado sin vencer
+          result.push({ period, disabled: false });
+        } else if (isFuture && futureCount < maxFuture) {
+          // Solo mostrar 2 períodos futuros, deshabilitados
+          result.push({ period, disabled: true });
+          futureCount++;
+        }
+      });
+    }
+    
+    return result;
+  };
+
+  // Función para transformar los datos del API al formato interno
+  const transformAPIData = (data: PointFromAPI[]): PuntoGenerado[] => {
+    return data.map(point => ({
+      id: String(point.templatePointId),
+      nombre: point.templatePointName,
+      subpuntos: point.subpoints.map(subpoint => {
+        // Combinar todos los períodos de todos los auditPeriods
+        const allPeriods: PeriodFromAPI[] = [];
+        subpoint.auditPeriods.forEach(ap => {
+          allPeriods.push(...ap.periods);
+        });
+        
+        // Filtrar períodos según las reglas
+        const filteredPeriods = filterPeriods(allPeriods, subpoint.periodicity);
+        
+        return {
+          id: String(subpoint.templateSubpointId),
+          nombre: subpoint.templateSubpointName,
+          periodicidad: subpoint.periodicity === 'monthly' ? 'Mensual' : 'Anual',
+          periodos: filteredPeriods.map(({ period, disabled }) => ({
+            id: `${subpoint.templateSubpointId}-${period.periodYear}-${period.periodMonth || 0}`,
+            nombre: getPeriodName(period, subpoint.periodicity),
+            fechaLimite: period.dueAt,
+            estado: disabled ? 'futuro' as const : getPeriodState(period),
+            archivoUrl: period.auditFileId ? `/api/files/${period.auditFileId}` : undefined,
+            archivoNombre: period.file?.originalName || (period.hasActiveFile ? `archivo_${period.periodYear}_${period.periodMonth || 'anual'}.pdf` : undefined),
+            fechaCarga: period.uploadedAt || undefined,
+            isOnTime: period.isOnTime,
+            auditFileId: period.auditFileId,
+            disabled,
+            templateSubpointId: subpoint.templateSubpointId,
+            periodYear: period.periodYear,
+            periodMonth: period.periodMonth,
+          })),
+        };
+      }),
+    }));
+  };
+
+  // Función para cargar los períodos de una empresa
+  const loadCompanyPeriods = useCallback(async (companyUserId: number) => {
+    try {
+      // Marcar empresa como cargando
+      setEmpresas(prev => prev.map(emp => 
+        emp.companyUserId === companyUserId 
+          ? { ...emp, loadingPeriods: true }
+          : emp
+      ));
+
+      const response = await BasicPetition({
+        endpoint: `/audits/companies/${companyUserId}/audit-periods/tree`,
+        method: 'GET',
+      });
+
+      if (Array.isArray(response)) {
+        const puntos = transformAPIData(response);
+        
+        setEmpresas(prev => prev.map(emp => 
+          emp.companyUserId === companyUserId 
+            ? { ...emp, puntos, loadingPeriods: false, periodsLoaded: true }
+            : emp
+        ));
+      }
+    } catch (error) {
+      console.error('Error al cargar períodos:', error);
+      showNotification({
+        title: 'Error',
+        message: 'No se pudieron cargar los períodos de auditoría',
+        color: 'red',
+      });
+      setEmpresas(prev => prev.map(emp => 
+        emp.companyUserId === companyUserId 
+          ? { ...emp, loadingPeriods: false }
+          : emp
+      ));
+    }
+  }, []);
+
+  // Manejar expansión de empresa
+  const handleAccordionChange = (value: string | null) => {
+    setExpandedEmpresa(value);
+    
+    if (value) {
+      const empresa = empresas.find(e => e.id === value);
+      if (empresa && empresa.companyUserId && !empresa.periodsLoaded && !empresa.loadingPeriods) {
+        loadCompanyPeriods(empresa.companyUserId);
+      }
+    }
+  };
   useEffect(() => {
     const fetchEmpresas = async () => {
       try {
@@ -158,12 +383,14 @@ export function SGIGenerado() {
           const empresasTransformadas: EmpresaGenerada[] = response.map((company: CompanyFromAPI) => ({
             id: String(company.companyUserId),
             nombre: company.profile.nombreEmpresa,
-            puntos: [], // Los puntos se cargarán por separado si es necesario
+            puntos: [], // Los puntos se cargarán al expandir la empresa
             companyUserId: company.companyUserId,
             email: company.email,
             isActive: company.isActive,
             profile: company.profile,
             subpointsStats: company.subpointsStats,
+            loadingPeriods: false,
+            periodsLoaded: false,
           }));
           setEmpresas(empresasTransformadas);
         }
@@ -259,20 +486,114 @@ export function SGIGenerado() {
   };
 
   // Manejar carga de archivo por periodo
-  const handleCargarArchivoPeriodo = (file: File | null, periodo: Periodo) => {
-    if (!file) return;
+  const handleCargarArchivoPeriodo = async (file: File | null, periodo: Periodo, companyUserId: number) => {
+    if (!file || !periodo.templateSubpointId) return;
 
     setUploadingFile(true);
 
-    // Simular subida
-    setTimeout(() => {
-      setUploadingFile(false);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('year', String(periodo.periodYear));
+      if (periodo.periodMonth) {
+        formData.append('month', String(periodo.periodMonth));
+      }
+
+      await BasicPetition({
+        endpoint: `/audits/subpoints/${periodo.templateSubpointId}/file`,
+        method: 'POST',
+        data: formData,
+      });
+
       showNotification({
         title: 'Archivo cargado',
         message: `El archivo "${file.name}" se cargó correctamente para ${periodo.nombre}`,
         color: 'green',
       });
-    }, 1000);
+
+      // Recargar los períodos de la empresa
+      loadCompanyPeriods(companyUserId);
+    } catch (error) {
+      console.error('Error al subir archivo:', error);
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo subir el archivo',
+        color: 'red',
+      });
+    } finally {
+      setUploadingFile(false);
+    }
+  };
+
+  // Manejar eliminación de archivo (solo admin)
+  const handleEliminarArchivo = async (periodo: Periodo, companyUserId: number) => {
+    if (!periodo.templateSubpointId || !periodo.auditFileId) return;
+
+    try {
+      // Construir query params para DELETE
+      let queryParams = `year=${periodo.periodYear}`;
+      if (periodo.periodMonth) {
+        queryParams += `&month=${periodo.periodMonth}`;
+      }
+
+      await BasicPetition({
+        endpoint: `/audits/subpoints/${periodo.templateSubpointId}/file?${queryParams}`,
+        method: 'DELETE',
+      });
+
+      showNotification({
+        title: 'Archivo eliminado',
+        message: `El archivo de ${periodo.nombre} fue eliminado correctamente`,
+        color: 'green',
+      });
+
+      // Recargar los períodos de la empresa
+      loadCompanyPeriods(companyUserId);
+    } catch (error) {
+      console.error('Error al eliminar archivo:', error);
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo eliminar el archivo',
+        color: 'red',
+      });
+    }
+  };
+
+  // Manejar ver archivo (GET con descarga)
+  const handleVerArchivo = async (periodo: Periodo) => {
+    if (!periodo.templateSubpointId) return;
+
+    try {
+      // Construir query params
+      let queryParams = `year=${periodo.periodYear}`;
+      if (periodo.periodMonth) {
+        queryParams += `&month=${periodo.periodMonth}`;
+      }
+
+      const response = await BasicPetition({
+        endpoint: `/audits/subpoints/${periodo.templateSubpointId}/file?${queryParams}`,
+        method: 'GET',
+      });
+
+      // La respuesta tiene downloadUrl
+      if (response?.downloadUrl) {
+        // Abrir la URL en una nueva pestaña
+        window.open(response.downloadUrl, '_blank');
+      } else {
+        showNotification({
+          title: 'Error',
+          message: 'No se pudo obtener la URL del archivo',
+          color: 'red',
+        });
+      }
+    } catch (error) {
+      console.error('Error al obtener archivo:', error);
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo obtener el archivo',
+        color: 'red',
+      });
+    }
   };
 
   return (
@@ -307,7 +628,10 @@ export function SGIGenerado() {
       <Stack gap="md">
         {empresasFiltradas.map((empresa) => (
           <Paper key={empresa.id} shadow="sm" p="md" radius="md" withBorder>
-            <Accordion>
+            <Accordion 
+              value={expandedEmpresa === empresa.id ? empresa.id : null}
+              onChange={(value) => handleAccordionChange(value === empresa.id ? empresa.id : null)}
+            >
               <Accordion.Item value={empresa.id}>
                 <Accordion.Control
                   icon={<FaChevronDown size={14} />}
@@ -352,162 +676,232 @@ export function SGIGenerado() {
                 </Accordion.Control>
 
                 <Accordion.Panel>
+                  {/* LOADER mientras se cargan los períodos */}
+                  {empresa.loadingPeriods && (
+                    <Center py="xl">
+                      <Stack align="center" gap="xs">
+                        <Loader size="md" />
+                        <Text size="sm" c="dimmed">Cargando períodos...</Text>
+                      </Stack>
+                    </Center>
+                  )}
+
+                  {/* Mensaje si no hay puntos */}
+                  {!empresa.loadingPeriods && empresa.periodsLoaded && empresa.puntos.length === 0 && (
+                    <Paper p="md" withBorder>
+                      <Text c="dimmed" ta="center">
+                        No hay puntos de auditoría  para esta empresa
+                      </Text>
+                    </Paper>
+                  )}
+
                   <Stack gap="sm">
                     {empresa.puntos.map((punto) => (
-                      <Paper
-                        key={punto.id}
-                        p="md"
-                        radius="md"
-                        style={{
-                          backgroundColor: '#e8eaa6',
-                          border: '1px solid #d4d68f',
-                        }}
-                      >
-                        <Text fw={600} size="lg" c="#4a4a4a" mb="sm">
-                          📁 {punto.nombre}
-                        </Text>
-
-                        <Divider my="sm" />
-
-                        {/* LISTA DE SUBPUNTOS */}
-                        <Stack gap="md" mt="sm">
-                          {punto.subpuntos.map((subpunto) => (
-                            <Paper
-                              key={subpunto.id}
-                              p="md"
-                              radius="sm"
-                              withBorder
-                              style={{
-                                backgroundColor: '#f5f7d0',
-                                border: '1px solid #e0e3a8',
-                              }}
-                            >
-                              {/* HEADER DEL SUBPUNTO */}
-                              <Group justify="space-between" mb="sm">
-                                <Stack gap={4}>
-                                  <Text fw={600} size="md">
-                                    📄 {subpunto.nombre}
-                                  </Text>
-                                  <Badge color="blue" size="sm">
-                                    Periodicidad: {subpunto.periodicidad}
-                                  </Badge>
-                                </Stack>
-                              </Group>
-
-                              <Divider my="sm" />
-
-                              {/* LISTA DE PERIODOS */}
-                              <Text size="sm" fw={600} c="dimmed" mb="xs">
-                                Periodos:
+                      <Accordion key={punto.id} variant="separated">
+                        <Accordion.Item value={punto.id}>
+                          <Accordion.Control
+                            style={{
+                              backgroundColor: '#e8eaa6',
+                              borderRadius: '8px',
+                            }}
+                          >
+                            <Group gap="xs">
+                              <Text fw={600} size="lg" c="#4a4a4a">
+                                📁 {punto.nombre}
                               </Text>
-                              <Stack gap="xs">
-                                {subpunto.periodos.map((periodo) => {
-                                  const colors = getEstadoColor(periodo.estado);
-                                  const icon = getEstadoIcon(periodo.estado);
-                                  const estadoTexto = getEstadoTexto(periodo.estado);
+                              <Badge color="teal" size="sm" variant="light">
+                                {punto.subpuntos.length} {punto.subpuntos.length === 1 ? 'subpunto' : 'subpuntos'}
+                              </Badge>
+                            </Group>
+                          </Accordion.Control>
+                          <Accordion.Panel>
+                            {/* Mensaje si no hay subpuntos */}
+                            {punto.subpuntos.length === 0 && (
+                              <Text size="sm" c="dimmed" ta="center" py="md">
+                                No hay subpuntos 
+                              </Text>
+                            )}
 
-                                  return (
-                                    <Paper
-                                      key={periodo.id}
-                                      p="sm"
-                                      withBorder
-                                      radius="sm"
-                                      style={{
-                                        backgroundColor: colors.bg,
-                                        borderColor: colors.border,
-                                        borderWidth: '2px',
-                                      }}
-                                    >
-                                      <Group justify="space-between" wrap="nowrap">
-                                        <Stack gap={4} style={{ flex: 1 }}>
-                                          <Group gap="xs" wrap="nowrap">
-                                            <Text size="sm" fw={600}>
-                                              {icon} {periodo.nombre}
-                                            </Text>
-                                            <Badge size="xs" color={colors.badge}>
-                                              {estadoTexto}
-                                            </Badge>
-                                          </Group>
-                                          <Text size="xs" c="dimmed">
-                                            Fecha límite: {formatFecha(periodo.fechaLimite)}
-                                          </Text>
-                                          
-                                          {/* INFORMACIÓN DE ARCHIVO CARGADO */}
-                                          {periodo.estado === 'cargado' && periodo.archivoNombre && (
-                                            <>
-                                              <Text size="xs" c="green" fw={500}>
-                                                📎 Archivo: {periodo.archivoNombre}
-                                              </Text>
-                                              {periodo.fechaCarga && (
-                                                <Text size="xs" c="dimmed">
-                                                  Cargado: {formatFecha(periodo.fechaCarga)}
-                                                </Text>
-                                              )}
-                                            </>
-                                          )}
-
-                                          {/* TEXTO DE VENCIDO */}
-                                          {periodo.estado === 'vencido' && (
-                                            <Text size="xs" c="red" fw={500}>
-                                              ⚠️ No se subió archivo a tiempo
-                                            </Text>
-                                          )}
-                                        </Stack>
-
-                                        {/* ACCIONES */}
-                                        <Box>
-                                          {periodo.estado === 'pendiente' && (
-                                            <FileInput
-                                              placeholder="Subir"
-                                              size="xs"
-                                              accept="application/pdf,image/*,.doc,.docx,.xls,.xlsx"
-                                              onChange={(file) => handleCargarArchivoPeriodo(file, periodo)}
-                                              disabled={uploadingFile}
-                                              leftSection={<FaFileUpload size={12} />}
-                                              style={{ width: 140 }}
-                                            />
-                                          )}
-
-                                          {periodo.estado === 'cargado' && periodo.archivoUrl && (
-                                            <Button
-                                              size="xs"
-                                              variant="light"
-                                              color="gray"
-                                              component="a"
-                                              href={periodo.archivoUrl}
-                                              target="_blank"
-                                            >
-                                              Ver archivo
-                                            </Button>
-                                          )}
-
-                                          {periodo.estado === 'vencido' && (
-                                            auth.userType !== 'empresa' ? (
-                                              <FileInput
-                                                placeholder="Subir (*Restraso)"
-                                                size="xs"
-                                                accept="application/pdf,image/*,.doc,.docx,.xls,.xlsx"
-                                                onChange={(file) => handleCargarArchivoPeriodo(file, periodo)}
-                                                disabled={uploadingFile}
-                                                leftSection={<FaFileUpload size={12} />}
-                                                style={{ width: 150 }}
-                                              />
-                                            ) : (
-                                              <Badge color="red" size="sm">
-                                                🔒 Bloqueado
-                                              </Badge>
-                                            )
-                                          )}
-                                        </Box>
+                            {/* LISTA DE SUBPUNTOS */}
+                            <Accordion variant="contained" mt="sm">
+                              {punto.subpuntos.map((subpunto) => (
+                                <Accordion.Item key={subpunto.id} value={subpunto.id}>
+                                  <Accordion.Control
+                                    style={{
+                                      backgroundColor: '#f5f7d0',
+                                    }}
+                                  >
+                                    <Group justify="space-between" style={{ flex: 1 }}>
+                                      <Group gap="xs">
+                                        <Text fw={600} size="md">
+                                          📄 {subpunto.nombre}
+                                        </Text>
+                                        <Badge color="blue" size="sm">
+                                          {subpunto.periodicidad}
+                                        </Badge>
+                                        <Badge 
+                                          color={subpunto.periodos.some(p => p.estado === 'vencido') ? 'red' : 
+                                                 subpunto.periodos.some(p => p.estado === 'pendiente') ? 'yellow' : 'green'} 
+                                          size="sm" 
+                                          variant="light"
+                                        >
+                                          {subpunto.periodos.length} {subpunto.periodos.length === 1 ? 'período' : 'períodos'}
+                                        </Badge>
                                       </Group>
-                                    </Paper>
-                                  );
-                                })}
-                              </Stack>
-                            </Paper>
-                          ))}
-                        </Stack>
-                      </Paper>
+                                    </Group>
+                                  </Accordion.Control>
+                                  <Accordion.Panel>
+                                    {/* Mensaje si no hay períodos */}
+                                    {subpunto.periodos.length === 0 && (
+                                      <Text size="sm" c="dimmed" ta="center" py="sm">
+                                        No hay períodos de auditoría configurados
+                                      </Text>
+                                    )}
+
+                                    <Stack gap="xs">
+                                      {subpunto.periodos.map((periodo) => {
+                                        const colors = getEstadoColor(periodo.estado);
+                                        const icon = getEstadoIcon(periodo.estado);
+                                        const estadoTexto = getEstadoTexto(periodo.estado);
+
+                                        return (
+                                          <Paper
+                                            key={periodo.id}
+                                            p="sm"
+                                            withBorder
+                                            radius="sm"
+                                            style={{
+                                              backgroundColor: colors.bg,
+                                              borderColor: colors.border,
+                                              borderWidth: '2px',
+                                              opacity: periodo.disabled ? 0.6 : 1,
+                                            }}
+                                          >
+                                            <Group justify="space-between" wrap="nowrap">
+                                              <Stack gap={4} style={{ flex: 1 }}>
+                                                <Group gap="xs" wrap="nowrap">
+                                                  <Text size="sm" fw={600}>
+                                                    {icon} {periodo.nombre}
+                                                  </Text>
+                                                  <Badge size="xs" color={colors.badge}>
+                                                    {estadoTexto}
+                                                  </Badge>
+                                                </Group>
+                                                <Text size="xs" c="dimmed">
+                                                  Fecha límite: {formatFecha(periodo.fechaLimite)}
+                                                </Text>
+                                                
+                                                {/* INFORMACIÓN DE ARCHIVO CARGADO */}
+                                                {periodo.estado === 'cargado' && periodo.archivoNombre && (
+                                                  <>
+                                                    <Text size="xs" c="green" fw={500}>
+                                                      📎 Archivo: {periodo.archivoNombre}
+                                                    </Text>
+                                                    {periodo.fechaCarga && (
+                                                      <Text size="xs" c="dimmed">
+                                                        Cargado: {formatFecha(periodo.fechaCarga)}
+                                                      </Text>
+                                                    )}
+                                                  </>
+                                                )}
+
+                                                {/* TEXTO DE VENCIDO */}
+                                                {periodo.estado === 'vencido' && (
+                                                  <Text size="xs" c="red" fw={500}>
+                                                    ⚠️ No se subió archivo a tiempo
+                                                  </Text>
+                                                )}
+
+                                                {/* Indicador de tiempo (a tiempo o tarde) */}
+                                                {periodo.estado === 'cargado' && periodo.isOnTime !== null && (
+                                                  <Badge 
+                                                    size="xs" 
+                                                    color={periodo.isOnTime ? 'green' : 'orange'}
+                                                    variant="light"
+                                                  >
+                                                    {periodo.isOnTime ? '✓ A tiempo' : '⚠ Con retraso'}
+                                                  </Badge>
+                                                )}
+                                              </Stack>
+
+                                              {/* ACCIONES */}
+                                              <Box>
+                                                {periodo.estado === 'pendiente' && (
+                                                  <FileInput
+                                                    placeholder="Subir"
+                                                    size="xs"
+                                                    accept="application/pdf,image/*,.doc,.docx,.xls,.xlsx"
+                                                    onChange={(file) => handleCargarArchivoPeriodo(file, periodo, empresa.companyUserId!)}
+                                                    disabled={uploadingFile}
+                                                    leftSection={<FaFileUpload size={12} />}
+                                                    style={{ width: 140 }}
+                                                  />
+                                                )}
+
+                                                {periodo.estado === 'cargado' && (
+                                                  <Group gap="xs">
+                                                    <Button
+                                                      size="xs"
+                                                      variant="light"
+                                                      color="gray"
+                                                      onClick={() => handleVerArchivo(periodo)}
+                                                    >
+                                                      Ver archivo
+                                                    </Button>
+                                                    {auth.userType === 'admin' && (
+                                                      <Tooltip label="Eliminar archivo para permitir nueva carga">
+                                                        <Button
+                                                          size="xs"
+                                                          variant="light"
+                                                          color="red"
+                                                          onClick={() => handleEliminarArchivo(periodo, empresa.companyUserId!)}
+                                                          leftSection={<FaTrash size={10} />}
+                                                        >
+                                                          Eliminar
+                                                        </Button>
+                                                      </Tooltip>
+                                                    )}
+                                                  </Group>
+                                                )}
+
+                                                {periodo.estado === 'vencido' && (
+                                                  auth.userType !== 'empresa' ? (
+                                                    <FileInput
+                                                      placeholder="Subir (*Retraso)"
+                                                      size="xs"
+                                                      accept="application/pdf,image/*,.doc,.docx,.xls,.xlsx"
+                                                      onChange={(file) => handleCargarArchivoPeriodo(file, periodo, empresa.companyUserId!)}
+                                                      disabled={uploadingFile}
+                                                      leftSection={<FaFileUpload size={12} />}
+                                                      style={{ width: 150 }}
+                                                    />
+                                                  ) : (
+                                                    <Badge color="red" size="sm">
+                                                      🔒 Bloqueado
+                                                    </Badge>
+                                                  )
+                                                )}
+
+                                                {periodo.estado === 'futuro' && (
+                                                  <Tooltip label="Este período aún no está disponible para carga">
+                                                    <Badge color="gray" size="sm" variant="outline">
+                                                      🔒 Próximamente
+                                                    </Badge>
+                                                  </Tooltip>
+                                                )}
+                                              </Box>
+                                            </Group>
+                                          </Paper>
+                                        );
+                                      })}
+                                    </Stack>
+                                  </Accordion.Panel>
+                                </Accordion.Item>
+                              ))}
+                            </Accordion>
+                          </Accordion.Panel>
+                        </Accordion.Item>
+                      </Accordion>
                     ))}
                   </Stack>
                 </Accordion.Panel>

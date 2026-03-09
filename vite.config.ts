@@ -36,6 +36,11 @@ export default defineConfig({
         target: 'https://sgi-gservice-708746088485.us-central1.run.app',
         changeOrigin: true,
         secure: false,
+      },
+      '/audits': {
+        target: 'https://sgi-gservice-708746088485.us-central1.run.app',
+        changeOrigin: true,
+        secure: false,
       }
     }
   }

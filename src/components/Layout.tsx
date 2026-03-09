@@ -2,6 +2,7 @@ import { AppShell, Burger, Group, Text, Avatar, Modal, Stack, Button, Box } from
 import { useDisclosure } from '@mantine/hooks';
 import { Outlet } from 'react-router-dom';
 import { Navbar } from './Navbar';
+import { DeadlinesModal } from './DeadlinesModal';
 import logoDoGroup from '../assets/logoG.png';
 import { useState, useEffect, useRef } from 'react';
 import { FaBuilding, FaUserShield, FaClipboardCheck, FaUser, FaEdit } from 'react-icons/fa';
@@ -18,10 +19,23 @@ export function AppLayout() {
   const [loading, setLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const triedRefreshPhotoRef = useRef(false);
+  
+  // Modal de deadlines para empresas
+  const [deadlinesModalOpened, setDeadlinesModalOpened] = useState(false);
+  // Usar sessionStorage para rastrear si ya se mostró (se resetea al cerrar pestaña)
+  const getDeadlinesShown = () => sessionStorage.getItem('deadlines_shown') === 'true';
+  const setDeadlinesShown = (value: boolean) => sessionStorage.setItem('deadlines_shown', String(value));
 
   const [userName, setUserName] = useState<string>('');
   const [userType, setUserType] = useState<string>('');
   const [userId, setUserId] = useState<string>('');
+
+  // Log al montar
+  console.log('🏠 AppLayout montado, auth:', { 
+    userType: auth.userType, 
+    userId: auth.userId, 
+    isAuthenticated: auth.isAuthenticated 
+  });
 
   const refreshSignedPhotoUrl = async (targetUserId?: string) => {
     const id = targetUserId || userId || auth.userId || '';
@@ -85,8 +99,12 @@ export function AppLayout() {
     };
 
     window.addEventListener('storage', handleStorageChange);
+    
+    // Dispara manualmente para sincronizar después del login
+    handleStorageChange();
+    
     return () => window.removeEventListener('storage', handleStorageChange);
-  }, []);
+  }, [auth.isAuthenticated]);
 
   useEffect(() => {
     const isAuditor = (auth.userType || userType || '').toLowerCase() === 'auditor';
@@ -96,6 +114,39 @@ export function AppLayout() {
       void refreshSignedPhotoUrl(id);
     }
   }, [auth.userType, auth.userId]);
+
+  // Mostrar modal de deadlines para empresas al iniciar sesión
+  useEffect(() => {
+    const rawType = auth.userType || userType || '';
+    const normalizedType = rawType.toLowerCase().trim();
+    // Detectar si es empresa (puede venir como "empresa", "Empresa", "EMPRESA")
+    const isEmpresa = normalizedType === 'empresa' || normalizedType.includes('empresa');
+    const id = auth.userId || userId;
+    const alreadyShown = getDeadlinesShown();
+
+    console.log('🔍 DeadlinesModal check:', { 
+      rawType, 
+      normalizedType, 
+      isEmpresa, 
+      id, 
+      authUserId: auth.userId,
+      localUserId: userId,
+      shown: alreadyShown 
+    });
+
+    // Solo mostrar una vez por sesión y cuando tengamos el ID
+    if (isEmpresa && id && !alreadyShown) {
+      console.log('✅ Abriendo modal de deadlines para empresa:', id);
+      // Pequeño delay para que cargue la interfaz primero
+      const timer = setTimeout(() => {
+        console.log('⏰ Ejecutando setTimeout para abrir modal, id:', id);
+        setDeadlinesModalOpened(true);
+        setDeadlinesShown(true); // Marcar como mostrado DESPUÉS de abrir
+        console.log('📌 deadlinesModalOpened ahora debe ser true');
+      }, 800);
+      return () => clearTimeout(timer);
+    }
+  }, [auth.userType, auth.userId, userType, userId]);
 
   const handleAvatarImageError = () => {
     if (triedRefreshPhotoRef.current) return;
@@ -435,6 +486,13 @@ export function AppLayout() {
           </Group>
         </Stack>
       </Modal>
+
+      {/* Modal de Deadlines para Empresas */}
+      <DeadlinesModal
+        opened={deadlinesModalOpened}
+        onClose={() => setDeadlinesModalOpened(false)}
+        companyUserId={auth.userId || userId}
+      />
     </AppShell>
   );
 }

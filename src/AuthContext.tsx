@@ -101,6 +101,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('mi_app_token');
     localStorage.removeItem('mi_app_user_name');
     localStorage.removeItem('mi_app_user_photo');
+    // Limpiar flag de deadlines mostrados para que se muestre en próximo login
+    sessionStorage.removeItem('deadlines_shown');
     setIsAuthenticated(false);
     setUserType(null);
     setUserId(null);
