@@ -656,7 +656,7 @@ export function SGIGenerado() {
                       </Badge>
                       
                     </Group>
-                    {(auth.userType === 'admin' || auth.userType === 'auditor') && (
+                    {(auth.userType === 'Administrador' || auth.userType === 'Auditor') && (
                       <Button
                         size="xs"
                         variant="light"
@@ -848,7 +848,7 @@ export function SGIGenerado() {
                                                     >
                                                       Ver archivo
                                                     </Button>
-                                                    {auth.userType === 'admin' && (
+                                                    {auth.userType === 'Administrador' && (
                                                       <Tooltip label="Eliminar archivo para permitir nueva carga">
                                                         <Button
                                                           size="xs"
@@ -865,7 +865,7 @@ export function SGIGenerado() {
                                                 )}
 
                                                 {periodo.estado === 'vencido' && (
-                                                  auth.userType !== 'empresa' ? (
+                                                  auth.userType !== 'Empresa' ? (
                                                     <FileInput
                                                       placeholder="Subir (*Retraso)"
                                                       size="xs"
