@@ -15,11 +15,13 @@ import {
   Loader,
   Center,
   Tooltip,
+  Modal,
+  Table,
+  ScrollArea,
 } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
-import { FaChevronDown, FaFileUpload, FaDownload, FaSearch, FaTrash } from 'react-icons/fa';
+import { FaChevronDown, FaFileUpload, FaDownload, FaSearch, FaTrash, FaEye, FaFilePdf } from 'react-icons/fa';
 import { useAuth } from '../AuthContext';
-import JSZip from 'jszip';
 import { BasicPetition } from '../core/petition';
 
 // ==========================================
@@ -129,6 +131,32 @@ interface EmpresaGenerada {
   periodsLoaded?: boolean;
 }
 
+// Interface para el reporte de alertas
+interface AlertPeriod {
+  templatePointId: number;
+  templatePointName: string;
+  templateSubpointId: number;
+  templateSubpointName: string;
+  periodicity: string;
+  periodYear: number;
+  periodMonth: number | null;
+  dueAt: string;
+  daysOverdue?: number;
+  daysUntilDue?: number;
+}
+
+interface AlertReport {
+  companyUserId: number;
+  generatedAt: string;
+  graceDays: {
+    monthly: number;
+    yearly: number;
+  };
+  alertThresholdDays: number;
+  missing: AlertPeriod[];
+  expiring: AlertPeriod[];
+}
+
 // ==========================================
 // FUNCIONES HELPER
 // ==========================================
@@ -200,6 +228,12 @@ export function SGIGenerado() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedEmpresa, setExpandedEmpresa] = useState<string | null>(null);
+  
+  // Estados para el modal de reporte de alertas
+  const [reportModalOpened, setReportModalOpened] = useState(false);
+  const [loadingReport, setLoadingReport] = useState(false);
+  const [alertReport, setAlertReport] = useState<AlertReport | null>(null);
+  const [reportEmpresaNombre, setReportEmpresaNombre] = useState<string>('');
 
   // Función para obtener el nombre del período
   const getPeriodName = (period: PeriodFromAPI, periodicity: string): string => {
@@ -416,68 +450,43 @@ export function SGIGenerado() {
 
   // Descargar todos los archivos de una empresa en ZIP
   const handleDescargarEmpresaZip = async (empresa: EmpresaGenerada) => {
+    if (!empresa.companyUserId) return;
+    
     setDownloadingZip(true);
 
     try {
-      const zip = new JSZip();
-      const empresaNombre = empresa.nombre.replace(/[^a-z0-9]/gi, '_');
-      let archivosEncontrados = 0;
-
-      // Recorrer puntos
-      empresa.puntos.forEach((punto) => {
-        const puntoNombre = punto.nombre.replace(/[^a-z0-9]/gi, '_');
-
-        // Recorrer subpuntos
-        punto.subpuntos.forEach((subpunto) => {
-          const subpuntoNombre = subpunto.nombre.replace(/[^a-z0-9]/gi, '_');
-
-          // Recorrer periodos cargados
-          subpunto.periodos.forEach((periodo) => {
-            if (periodo.estado === 'cargado' && periodo.archivoUrl && periodo.archivoNombre) {
-              // Crear estructura: Empresa/Punto/Subpunto/archivo.pdf
-              const rutaArchivo = `${empresaNombre}/${puntoNombre}/${subpuntoNombre}/${periodo.archivoNombre}`;
-              
-              // En un caso real, aquí se descargaría el archivo desde periodo.archivoUrl
-              // Por ahora simulamos con contenido de texto
-              const contenidoSimulado = `Archivo simulado para ${periodo.nombre}\nEmpresa: ${empresa.nombre}\nPunto: ${punto.nombre}\nSubpunto: ${subpunto.nombre}\nPeriodo: ${periodo.nombre}\nFecha carga: ${periodo.fechaCarga}`;
-              
-              zip.file(rutaArchivo, contenidoSimulado);
-              archivosEncontrados++;
-            }
-          });
-        });
+      const response = await BasicPetition({
+        endpoint: `/audits/companies/${empresa.companyUserId}/audit-files/zip`,
+        method: 'GET',
       });
 
-      if (archivosEncontrados === 0) {
+      // La respuesta debería tener una URL de descarga
+      if (response?.downloadUrl) {
+        // Abrir la URL de descarga en una nueva pestaña o descargar directamente
+        const link = document.createElement('a');
+        link.href = response.downloadUrl;
+        link.download = `${empresa.nombre.replace(/[^a-z0-9]/gi, '_')}_archivos.zip`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        showNotification({
+          title: 'Descarga iniciada',
+          message: `Descargando archivos de ${empresa.nombre}`,
+          color: 'green',
+        });
+      } else {
         showNotification({
           title: 'Sin archivos',
-          message: 'No hay archivos cargados para descargar',
+          message: 'No hay archivos disponibles para descargar',
           color: 'yellow',
         });
-        setDownloadingZip(false);
-        return;
       }
-
-      // Generar y descargar ZIP
-      const contenidoZip = await zip.generateAsync({ type: 'blob' });
-      const url = window.URL.createObjectURL(contenidoZip);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${empresaNombre}_archivos.zip`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-
-      showNotification({
-        title: 'Descarga completada',
-        message: `Se descargaron ${archivosEncontrados} archivos de ${empresa.nombre}`,
-        color: 'green',
-      });
     } catch (error) {
+      console.error('Error al descargar ZIP:', error);
       showNotification({
         title: 'Error',
-        message: 'No se pudo generar el archivo ZIP',
+        message: 'No se pudo descargar el archivo ZIP',
         color: 'red',
       });
     } finally {
@@ -596,6 +605,150 @@ export function SGIGenerado() {
     }
   };
 
+  // Manejar generación de reporte de alertas
+  const handleGenerarReporte = async (empresa: EmpresaGenerada) => {
+    if (!empresa.companyUserId) return;
+
+    setLoadingReport(true);
+    setReportEmpresaNombre(empresa.nombre);
+    setReportModalOpened(true);
+
+    try {
+      const response = await BasicPetition({
+        endpoint: `/audits/companies/${empresa.companyUserId}/deadlines`,
+        method: 'GET',
+      });
+
+      setAlertReport(response);
+    } catch (error) {
+      console.error('Error al generar reporte:', error);
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo generar el reporte de alertas',
+        color: 'red',
+      });
+      setReportModalOpened(false);
+    } finally {
+      setLoadingReport(false);
+    }
+  };
+
+  // Formatear nombre del período para el reporte
+  const formatPeriodNameReport = (period: AlertPeriod): string => {
+    if (period.periodicity === 'yearly') {
+      return `Año ${period.periodYear}`;
+    }
+    const monthName = period.periodMonth ? MONTH_NAMES[period.periodMonth - 1] : '';
+    return `${monthName} ${period.periodYear}`;
+  };
+
+  // Descargar reporte como PDF
+  const handleDescargarReportePDF = () => {
+    if (!alertReport) return;
+
+    // Crear contenido HTML para el PDF
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Reporte de Alertas - ${reportEmpresaNombre}</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 20px; }
+          h1 { color: #333; border-bottom: 2px solid #a1a23b; padding-bottom: 10px; }
+          h2 { color: #555; margin-top: 30px; }
+          .info { background: #f5f5f5; padding: 10px; border-radius: 5px; margin-bottom: 20px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+          th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+          th { background-color: #a1a23b; color: white; }
+          tr:nth-child(even) { background-color: #f9f9f9; }
+          .badge-red { background: #ff6b6b; color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+          .badge-yellow { background: #ffd43b; color: #333; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+          .empty { text-align: center; color: #888; padding: 20px; }
+          .footer { margin-top: 30px; text-align: center; color: #888; font-size: 12px; }
+        </style>
+      </head>
+      <body>
+        <h1>Reporte de Alertas</h1>
+        <h2>${reportEmpresaNombre}</h2>
+        
+        <div class="info">
+          <p><strong>Generado:</strong> ${new Date(alertReport.generatedAt).toLocaleString('es-MX')}</p>
+          <p><strong>Días de gracia:</strong> Mensual: ${alertReport.graceDays.monthly} días, Anual: ${alertReport.graceDays.yearly} días</p>
+        </div>
+
+        <h2>❌ Períodos Vencidos (${alertReport.missing.length})</h2>
+        ${alertReport.missing.length === 0 ? 
+          '<p class="empty">✅ No hay períodos vencidos</p>' :
+          `<table>
+            <thead>
+              <tr>
+                <th>Punto</th>
+                <th>Subpunto</th>
+                <th>Período</th>
+                <th>Fecha límite</th>
+                <th>Días vencido</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${alertReport.missing.map(item => `
+                <tr>
+                  <td>${item.templatePointName}</td>
+                  <td>${item.templateSubpointName}</td>
+                  <td>${formatPeriodNameReport(item)}</td>
+                  <td>${formatFecha(item.dueAt)}</td>
+                  <td><span class="badge-red">${item.daysOverdue} días</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>`
+        }
+
+        <h2>⚠️ Próximos a Vencer (${alertReport.expiring.length})</h2>
+        ${alertReport.expiring.length === 0 ? 
+          '<p class="empty">✅ No hay períodos próximos a vencer</p>' :
+          `<table>
+            <thead>
+              <tr>
+                <th>Punto</th>
+                <th>Subpunto</th>
+                <th>Período</th>
+                <th>Fecha límite</th>
+                <th>Días restantes</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${alertReport.expiring.map(item => `
+                <tr>
+                  <td>${item.templatePointName}</td>
+                  <td>${item.templateSubpointName}</td>
+                  <td>${formatPeriodNameReport(item)}</td>
+                  <td>${formatFecha(item.dueAt)}</td>
+                  <td><span class="badge-yellow">${item.daysUntilDue} días</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>`
+        }
+
+        <div class="footer">
+          <p>Sistema de Gestión Integral - Reporte generado</p>
+        </div>
+      </body>
+      </html>
+    `;
+
+    // Abrir ventana de impresión para guardar como PDF
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(htmlContent);
+      printWindow.document.close();
+      printWindow.onload = () => {
+        printWindow.print();
+      };
+    }
+  };
+
   return (
     <Container size="xl" py="md">
       <Title order={2} mb="lg">
@@ -656,22 +809,40 @@ export function SGIGenerado() {
                       </Badge>
                       
                     </Group>
-                    {(auth.userType === 'Administrador' || auth.userType === 'Auditor') && (
-                      <Button
-                        size="xs"
-                        variant="light"
-                        color="blue"
-                        leftSection={<FaDownload size={12} />}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDescargarEmpresaZip(empresa);
-                        }}
-                        loading={downloadingZip}
-                        disabled={downloadingZip}
-                      >
-                        Descargar ZIP
-                      </Button>
-                    )}
+                    <Group gap="xs">
+                      {(auth.userType === 'Administrador' || auth.userType === 'Auditor') && (
+                        <Button
+                          size="xs"
+                          variant="light"
+                          color="blue"
+                          leftSection={<FaDownload size={12} />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDescargarEmpresaZip(empresa);
+                          }}
+                          loading={downloadingZip}
+                          disabled={downloadingZip}
+                        >
+                          Descargar ZIP
+                        </Button>
+                      )}
+                      {auth.userType === 'Administrador' && (
+                        <Tooltip label="Ver reporte de alertas">
+                          <Button
+                            size="xs"
+                            variant="light"
+                            color="orange"
+                            leftSection={<FaEye size={12} />}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleGenerarReporte(empresa);
+                            }}
+                          >
+                            Alertas
+                          </Button>
+                        </Tooltip>
+                      )}
+                    </Group>
                   </Group>
                 </Accordion.Control>
 
@@ -826,7 +997,8 @@ export function SGIGenerado() {
 
                                               {/* ACCIONES */}
                                               <Box>
-                                                {periodo.estado === 'pendiente' && (
+                                                {/* Solo Empresa y Administrador pueden subir archivos en períodos pendientes */}
+                                                {periodo.estado === 'pendiente' && (auth.userType === 'Empresa' || auth.userType === 'Administrador') && (
                                                   <FileInput
                                                     placeholder="Subir"
                                                     size="xs"
@@ -836,6 +1008,13 @@ export function SGIGenerado() {
                                                     leftSection={<FaFileUpload size={12} />}
                                                     style={{ width: 140 }}
                                                   />
+                                                )}
+
+                                                {/* Auditor solo puede ver en períodos pendientes */}
+                                                {periodo.estado === 'pendiente' && auth.userType === 'Auditor' && (
+                                                  <Badge color="yellow" size="sm" variant="outline">
+                                                    Pendiente
+                                                  </Badge>
                                                 )}
 
                                                 {periodo.estado === 'cargado' && (
@@ -865,7 +1044,7 @@ export function SGIGenerado() {
                                                 )}
 
                                                 {periodo.estado === 'vencido' && (
-                                                  auth.userType !== 'Empresa' ? (
+                                                  auth.userType === 'Administrador' ? (
                                                     <FileInput
                                                       placeholder="Subir (*Retraso)"
                                                       size="xs"
@@ -877,7 +1056,7 @@ export function SGIGenerado() {
                                                     />
                                                   ) : (
                                                     <Badge color="red" size="sm">
-                                                      🔒 Bloqueado
+                                                      🔒 Vencido
                                                     </Badge>
                                                   )
                                                 )}
@@ -921,6 +1100,148 @@ export function SGIGenerado() {
         )}
       </Stack>
       )}
+
+      {/* MODAL DE REPORTE DE ALERTAS */}
+      <Modal
+        opened={reportModalOpened}
+        onClose={() => {
+          setReportModalOpened(false);
+          setAlertReport(null);
+        }}
+        title={`Reporte de Alertas - ${reportEmpresaNombre}`}
+        size="xl"
+        centered
+      >
+        {loadingReport ? (
+          <Center py="xl">
+            <Stack align="center" gap="xs">
+              <Loader size="lg" />
+              <Text size="sm" c="dimmed">Generando reporte...</Text>
+            </Stack>
+          </Center>
+        ) : alertReport ? (
+          <Stack gap="md">
+            {/* Información general */}
+            <Paper p="sm" withBorder bg="gray.0">
+              <Group justify="space-between">
+                <Text size="sm">
+                  <strong>Generado:</strong> {new Date(alertReport.generatedAt).toLocaleString('es-MX')}
+                </Text>
+                <Text size="sm">
+                  <strong>Días de gracia:</strong> Mensual: {alertReport.graceDays.monthly}, Anual: {alertReport.graceDays.yearly}
+                </Text>
+              </Group>
+            </Paper>
+
+            {/* Períodos vencidos (missing) */}
+            <Paper p="md" withBorder>
+              <Group gap="xs" mb="sm">
+                <Badge color="red" size="lg">❌ Períodos Vencidos</Badge>
+                <Badge color="red" variant="outline">{alertReport.missing.length}</Badge>
+              </Group>
+              
+              {alertReport.missing.length === 0 ? (
+                <Text c="dimmed" ta="center" py="md">
+                  ✅ No hay períodos vencidos
+                </Text>
+              ) : (
+                <ScrollArea h={alertReport.missing.length > 5 ? 250 : 'auto'}>
+                  <Table striped highlightOnHover>
+                    <Table.Thead>
+                      <Table.Tr>
+                        <Table.Th>Punto</Table.Th>
+                        <Table.Th>Subpunto</Table.Th>
+                        <Table.Th>Período</Table.Th>
+                        <Table.Th>Fecha límite</Table.Th>
+                        <Table.Th>Días vencido</Table.Th>
+                      </Table.Tr>
+                    </Table.Thead>
+                    <Table.Tbody>
+                      {alertReport.missing.map((item, index) => (
+                        <Table.Tr key={index}>
+                          <Table.Td>{item.templatePointName}</Table.Td>
+                          <Table.Td>{item.templateSubpointName}</Table.Td>
+                          <Table.Td>{formatPeriodNameReport(item)}</Table.Td>
+                          <Table.Td>{formatFecha(item.dueAt)}</Table.Td>
+                          <Table.Td>
+                            <Badge color="red" size="sm">
+                              {item.daysOverdue} días
+                            </Badge>
+                          </Table.Td>
+                        </Table.Tr>
+                      ))}
+                    </Table.Tbody>
+                  </Table>
+                </ScrollArea>
+              )}
+            </Paper>
+
+            {/* Períodos por vencer (expiring) */}
+            <Paper p="md" withBorder>
+              <Group gap="xs" mb="sm">
+                <Badge color="yellow" size="lg">⚠️ Próximos a Vencer</Badge>
+                <Badge color="yellow" variant="outline">{alertReport.expiring.length}</Badge>
+              </Group>
+              
+              {alertReport.expiring.length === 0 ? (
+                <Text c="dimmed" ta="center" py="md">
+                  ✅ No hay períodos próximos a vencer
+                </Text>
+              ) : (
+                <ScrollArea h={alertReport.expiring.length > 5 ? 250 : 'auto'}>
+                  <Table striped highlightOnHover>
+                    <Table.Thead>
+                      <Table.Tr>
+                        <Table.Th>Punto</Table.Th>
+                        <Table.Th>Subpunto</Table.Th>
+                        <Table.Th>Período</Table.Th>
+                        <Table.Th>Fecha límite</Table.Th>
+                        <Table.Th>Días restantes</Table.Th>
+                      </Table.Tr>
+                    </Table.Thead>
+                    <Table.Tbody>
+                      {alertReport.expiring.map((item, index) => (
+                        <Table.Tr key={index}>
+                          <Table.Td>{item.templatePointName}</Table.Td>
+                          <Table.Td>{item.templateSubpointName}</Table.Td>
+                          <Table.Td>{formatPeriodNameReport(item)}</Table.Td>
+                          <Table.Td>{formatFecha(item.dueAt)}</Table.Td>
+                          <Table.Td>
+                            <Badge color="yellow" size="sm">
+                              {item.daysUntilDue} días
+                            </Badge>
+                          </Table.Td>
+                        </Table.Tr>
+                      ))}
+                    </Table.Tbody>
+                  </Table>
+                </ScrollArea>
+              )}
+            </Paper>
+
+            {/* Botones */}
+            <Group justify="flex-end">
+              <Button
+                variant="light"
+                color="red"
+                leftSection={<FaFilePdf size={14} />}
+                onClick={handleDescargarReportePDF}
+              >
+                Descargar PDF
+              </Button>
+              <Button
+                variant="default"
+                onClick={() => {
+                  setReportModalOpened(false);
+                  setAlertReport(null);
+                }}
+              >
+                Cerrar
+              </Button>
+            </Group>
+          </Stack>
+        ) : null}
+      </Modal>
     </Container>
   );
 }
