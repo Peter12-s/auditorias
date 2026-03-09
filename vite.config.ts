@@ -22,6 +22,11 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
+      '/companies': {
+        target: 'https://sgi-gservice-708746088485.us-central1.run.app',
+        changeOrigin: true,
+        secure: false,
+      },
       '/chat': {
         target: 'https://sgi-gservice-708746088485.us-central1.run.app',
         changeOrigin: true,

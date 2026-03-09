@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Container,
   Title,
@@ -13,11 +13,14 @@ import {
   Button,
   Box,
   TextInput,
+  Loader,
+  Center,
 } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
 import { FaChevronDown, FaFileUpload, FaDownload, FaSearch } from 'react-icons/fa';
 import { useAuth } from '../AuthContext';
 import JSZip from 'jszip';
+import { BasicPetition } from '../core/petition';
 
 // ==========================================
 // INTERFACES
@@ -46,152 +49,39 @@ interface PuntoGenerado {
   subpuntos: SubpuntoGenerado[];
 }
 
+// Interface para datos del API
+interface CompanyProfile {
+  nombreEmpresa: string;
+  rfc: string;
+  telefono: string;
+  responsableLegal: string;
+  subEmpresa: string | null;
+}
+
+interface SubpointsStats {
+  totalSubpoints: number;
+  subpointsWithFiles: number;
+}
+
+interface CompanyFromAPI {
+  companyUserId: number;
+  email: string;
+  isActive: boolean;
+  profile: CompanyProfile;
+  subpointsStats: SubpointsStats;
+}
+
 interface EmpresaGenerada {
   id: string;
   nombre: string;
   puntos: PuntoGenerado[];
+  // Campos adicionales del API
+  companyUserId?: number;
+  email?: string;
+  isActive?: boolean;
+  profile?: CompanyProfile;
+  subpointsStats?: SubpointsStats;
 }
-
-// ==========================================
-// DATOS DUMMY
-// ==========================================
-
-const generarPeriodosDummy = (periodicidad: string): Periodo[] => {
-  const periodos: Periodo[] = [];
-  const fechaInicio = new Date('2026-01-17');
-  const hoy = new Date();
-
-  const cantidad = periodicidad === 'Anual' ? 5 : 12;
-
-  for (let i = 0; i < cantidad; i++) {
-    let fechaLimite = new Date(fechaInicio);
-    let nombre = '';
-
-    if (periodicidad === 'Semanal') {
-      fechaLimite.setDate(fechaInicio.getDate() + (i * 7));
-      const mes = fechaLimite.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
-      nombre = `Semana ${i + 1} - ${mes}`;
-    } else if (periodicidad === 'Mensual') {
-      fechaLimite = new Date(2026, i, 17);
-      nombre = fechaLimite.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
-    } else if (periodicidad === 'Anual') {
-      fechaLimite = new Date(2026 + i, 0, 17);
-      nombre = `Año ${2026 + i}`;
-    }
-
-    // Determinar estado basado en la fecha
-    let estado: 'pendiente' | 'cargado' | 'vencido' = 'pendiente';
-    
-    if (fechaLimite < hoy) {
-      // Si ya pasó la fecha límite
-      estado = i % 3 === 0 ? 'vencido' : 'cargado'; // Algunos vencidos, otros cargados
-    }
-
-    // Simular algunos archivos cargados
-    const tieneCargado = estado === 'cargado';
-
-    periodos.push({
-      id: `periodo-${periodicidad}-${i}`,
-      nombre,
-      fechaLimite: fechaLimite.toISOString(),
-      estado,
-      ...(tieneCargado && {
-        archivoUrl: `https://storage.example.com/archivo-${i}.pdf`,
-        archivoNombre: `reporte-${nombre.toLowerCase().replace(/\s/g, '-')}.pdf`,
-        fechaCarga: new Date(fechaLimite.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString(), // 2 días antes
-      }),
-    });
-  }
-
-  return periodos;
-};
-
-const empresasDummy: EmpresaGenerada[] = [
-  {
-    id: '1',
-    nombre: 'GRUPO TRASNACIONAL DE INFRAESTRUCTURA',
-    puntos: [
-      {
-        id: '1-1',
-        nombre: 'Sección para punto 1',
-        subpuntos: [
-          {
-            id: '1-1-1',
-            nombre: 'Subpunto 1.1 - Reporte de Mantenimiento',
-            periodicidad: 'Mensual',
-            periodos: generarPeriodosDummy('Mensual'),
-          },
-          {
-            id: '1-1-2',
-            nombre: 'Subpunto 1.2 - Inspección de Seguridad',
-            periodicidad: 'Semanal',
-            periodos: generarPeriodosDummy('Semanal'),
-          },
-        ],
-      },
-      {
-        id: '1-2',
-        nombre: 'Sección para punto 2',
-        subpuntos: [
-          {
-            id: '1-2-1',
-            nombre: 'Subpunto 2.1 - Auditoría Interna',
-            periodicidad: 'Anual',
-            periodos: generarPeriodosDummy('Anual'),
-          },
-          {
-            id: '1-2-2',
-            nombre: 'Subpunto 2.2 - Control de Calidad',
-            periodicidad: 'Mensual',
-            periodos: generarPeriodosDummy('Mensual'),
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: '2',
-    nombre: 'SNTE NACIONAL',
-    puntos: [
-      {
-        id: '2-1',
-        nombre: 'Sección para punto 1',
-        subpuntos: [
-          {
-            id: '2-1-1',
-            nombre: 'Subpunto 1.1 - Reporte Financiero',
-            periodicidad: 'Mensual',
-            periodos: generarPeriodosDummy('Mensual'),
-          },
-          {
-            id: '2-1-2',
-            nombre: 'Subpunto 1.2 - Capacitación Personal',
-            periodicidad: 'Semanal',
-            periodos: generarPeriodosDummy('Semanal'),
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: '3',
-    nombre: 'FERROMEX',
-    puntos: [
-      {
-        id: '3-1',
-        nombre: 'Sección para punto 1',
-        subpuntos: [
-          {
-            id: '3-1-1',
-            nombre: 'Subpunto 1.1 - Mantenimiento de Vías',
-            periodicidad: 'Semanal',
-            periodos: generarPeriodosDummy('Semanal'),
-          },
-        ],
-      },
-    ],
-  },
-];
 
 // ==========================================
 // FUNCIONES HELPER
@@ -249,8 +139,48 @@ export function SGIGenerado() {
   const auth = useAuth();
   const [uploadingFile, setUploadingFile] = useState(false);
   const [downloadingZip, setDownloadingZip] = useState(false);
-  const [empresas] = useState<EmpresaGenerada[]>(empresasDummy);
+  const [empresas, setEmpresas] = useState<EmpresaGenerada[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Cargar empresas desde el API
+  useEffect(() => {
+    const fetchEmpresas = async () => {
+      try {
+        setLoading(true);
+        const response = await BasicPetition({
+          endpoint: '/templates/companies',
+          method: 'GET',
+        });
+
+        if (Array.isArray(response)) {
+          // Transformar datos del API al formato esperado
+          const empresasTransformadas: EmpresaGenerada[] = response.map((company: CompanyFromAPI) => ({
+            id: String(company.companyUserId),
+            nombre: company.profile.nombreEmpresa,
+            puntos: [], // Los puntos se cargarán por separado si es necesario
+            companyUserId: company.companyUserId,
+            email: company.email,
+            isActive: company.isActive,
+            profile: company.profile,
+            subpointsStats: company.subpointsStats,
+          }));
+          setEmpresas(empresasTransformadas);
+        }
+      } catch (error) {
+        console.error('Error al cargar empresas:', error);
+        showNotification({
+          title: 'Error',
+          message: 'No se pudieron cargar las empresas',
+          color: 'red',
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchEmpresas();
+  }, []);
 
   // Filtrar empresas por término de búsqueda
   const empresasFiltradas = empresas.filter((empresa) =>
@@ -365,7 +295,15 @@ export function SGIGenerado() {
         size="md"
       />
 
+      {/* LOADER */}
+      {loading && (
+        <Center py="xl">
+          <Loader size="lg" />
+        </Center>
+      )}
+
       {/* LISTA DE EMPRESAS */}
+      {!loading && (
       <Stack gap="md">
         {empresasFiltradas.map((empresa) => (
           <Paper key={empresa.id} shadow="sm" p="md" radius="md" withBorder>
@@ -384,9 +322,15 @@ export function SGIGenerado() {
                     <Group gap="xs">
                       <Text>🏢</Text>
                       <Text fw={600}>{empresa.nombre}</Text>
+                      {empresa.profile?.subEmpresa && (
+                        <Badge color="gray" size="sm" variant="outline">
+                          {empresa.profile.subEmpresa}
+                        </Badge>
+                      )}
                       <Badge color="blue" size="sm">
-                        {empresa.puntos.length} {empresa.puntos.length === 1 ? 'punto' : 'puntos'}
+                        {empresa.subpointsStats?.totalSubpoints ?? 0} {(empresa.subpointsStats?.totalSubpoints ?? 0) === 1 ? 'subpunto' : 'subpuntos'}
                       </Badge>
+                      
                     </Group>
                     {(auth.userType === 'admin' || auth.userType === 'auditor') && (
                       <Button
@@ -582,6 +526,7 @@ export function SGIGenerado() {
           </Paper>
         )}
       </Stack>
+      )}
     </Container>
   );
 }

@@ -86,6 +86,13 @@ interface EmpresaGenerada {
   puntos: PuntoGenerado[];
 }
 
+interface AuditPeriod {
+  startMonth: number;
+  startYear: number;
+  endMonth: number;
+  endYear: number;
+}
+
 interface Subpunto {
   id: string;
   templateSubpointId?: string;
@@ -97,6 +104,7 @@ interface Subpunto {
   archivoCargado: boolean; // true = tiene archivos, false = no tiene
   cambios: Cambio[]; // Historial de cambios
   mensajes: Mensaje[]; // Mensajes del chat
+  auditPeriods?: AuditPeriod[]; // Períodos de auditoría
 }
 
 interface Punto {
@@ -895,10 +903,32 @@ export function SGI() {
     setSelectedEmpresa(empresaId);
     setSelectedPunto(puntoId);
     setEditingSubpunto({ empresaId, puntoId, subpunto });
+    
+    // Prellenar períodos de auditoría si existen
+    let periodoInicio: Date | null = null;
+    let periodoFin: Date | null = null;
+    let duracionAnios = '1';
+    
+    if (subpunto.auditPeriods && subpunto.auditPeriods.length > 0) {
+      const firstPeriod = subpunto.auditPeriods[0];
+      
+      if (subpunto.periodicidad === 'Mensual') {
+        // Para mensual, usar startMonth/startYear y endMonth/endYear
+        periodoInicio = new Date(firstPeriod.startYear, firstPeriod.startMonth - 1, 1);
+        periodoFin = new Date(firstPeriod.endYear, firstPeriod.endMonth - 1, 1);
+      } else if (subpunto.periodicidad === 'Anual') {
+        // Para anual, calcular la duración en años
+        duracionAnios = String((firstPeriod.endYear - firstPeriod.startYear) + 1);
+      }
+    }
+    
     formSubpunto.setValues({ 
       nombre: subpunto.nombre,
       periodicidad: subpunto.periodicidad,
       estado: subpunto.estado,
+      periodoInicio,
+      periodoFin,
+      duracionAnios,
     });
     setOpenedSubpunto(true);
   };
@@ -1302,6 +1332,7 @@ export function SGI() {
                     archivoCargado: sub.hasFiles === true || !!(sub.archivoUpload || sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl),
                     cambios: [],
                     mensajes: [],
+                    auditPeriods: sub.auditPeriods || [],
                   }))
                 : [],
             };
