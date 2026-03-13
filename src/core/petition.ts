@@ -76,18 +76,12 @@ export async function BasicPetition({
 
   const requestHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(method === 'GET' && {
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      Pragma: 'no-cache',
-      Expires: '0',
-    }),
     ...headers,
     ...(token && { Authorization: `Bearer ${token}` }),
   };
 
   const config: RequestInit = {
     method,
-    ...(method === 'GET' && { cache: 'no-store' }),
     headers: requestHeaders,
   };
 
