@@ -223,7 +223,7 @@ const formatFecha = (isoDate: string) => {
 export function SGIGenerado() {
   const auth = useAuth();
   const [uploadingFile, setUploadingFile] = useState(false);
-  const [downloadingZip, setDownloadingZip] = useState(false);
+  const [downloadingZipId, setDownloadingZipId] = useState<number | null>(null);
   const [empresas, setEmpresas] = useState<EmpresaGenerada[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -450,7 +450,7 @@ export function SGIGenerado() {
   const handleDescargarEmpresaZip = async (empresa: EmpresaGenerada) => {
     if (!empresa.companyUserId) return;
     
-    setDownloadingZip(true);
+    setDownloadingZipId(empresa.companyUserId);
 
     try {
       const response = await BasicPetition({
@@ -487,7 +487,7 @@ export function SGIGenerado() {
         color: 'red',
       });
     } finally {
-      setDownloadingZip(false);
+      setDownloadingZipId(null);
     }
   };
 
@@ -803,7 +803,7 @@ export function SGIGenerado() {
                       
                     </Group>
                     <Group gap="xs">
-                      {(auth.userType === 'Administrador' || auth.userType === 'Auditor') && (
+                      {(auth.userType === 'Administrador') && (
                         <Button
                           size="xs"
                           variant="light"
@@ -813,8 +813,8 @@ export function SGIGenerado() {
                             e.stopPropagation();
                             handleDescargarEmpresaZip(empresa);
                           }}
-                          loading={downloadingZip}
-                          disabled={downloadingZip}
+                          loading={downloadingZipId === empresa.companyUserId}
+                          disabled={downloadingZipId !== null}
                         >
                           Descargar ZIP
                         </Button>
