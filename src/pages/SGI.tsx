@@ -892,8 +892,9 @@ export function SGI() {
       
       if (subpunto.periodicidad === 'Mensual') {
         // Para mensual, usar startMonth/startYear y endMonth/endYear
-        periodoInicio = new Date(firstPeriod.startYear, firstPeriod.startMonth - 1, 1);
-        periodoFin = new Date(firstPeriod.endYear, firstPeriod.endMonth - 1, 1);
+        // Usar Date.UTC para crear fechas en UTC y evitar problemas de zona horaria
+        periodoInicio = new Date(Date.UTC(firstPeriod.startYear, firstPeriod.startMonth - 1, 1));
+        periodoFin = new Date(Date.UTC(firstPeriod.endYear, firstPeriod.endMonth - 1, 1));
       } else if (subpunto.periodicidad === 'Anual') {
         // Para anual, calcular la duración en años
         duracionAnios = String((firstPeriod.endYear - firstPeriod.startYear) + 1);
@@ -926,11 +927,13 @@ export function SGI() {
       const inicio = values.periodoInicio instanceof Date ? values.periodoInicio : new Date(values.periodoInicio);
       const fin = values.periodoFin instanceof Date ? values.periodoFin : new Date(values.periodoFin);
       
+      // Usar getUTCMonth para evitar problemas de zona horaria
+      // MonthPickerInput puede devolver fechas en UTC que al convertir a local cambian de mes
       auditPeriods = [{
-        startMonth: inicio.getMonth() + 1,
-        startYear: inicio.getFullYear(),
-        endMonth: fin.getMonth() + 1,
-        endYear: fin.getFullYear(),
+        startMonth: inicio.getUTCMonth() + 1,
+        startYear: inicio.getUTCFullYear(),
+        endMonth: fin.getUTCMonth() + 1,
+        endYear: fin.getUTCFullYear(),
       }];
     } else if (values.periodicidad === 'Anual') {
       const currentYear = new Date().getFullYear();
