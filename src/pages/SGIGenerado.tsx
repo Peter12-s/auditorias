@@ -453,33 +453,50 @@ export function SGIGenerado() {
     setDownloadingZipId(empresa.companyUserId);
 
     try {
-      const response = await BasicPetition({
-        endpoint: `/audits/companies/${empresa.companyUserId}/audit-files/zip`,
+      // Obtener el token de autenticación
+      const token = localStorage.getItem('access_token');
+      const baseUrl = import.meta.env.VITE_API_URL || 'https://sgi-gservice-708746088485.us-central1.run.app';
+      
+      const response = await fetch(`${baseUrl}/audits/companies/${empresa.companyUserId}/audit-files/zip`, {
         method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
       });
 
-      // La respuesta debería tener una URL de descarga
-      if (response?.downloadUrl) {
-        // Abrir la URL de descarga en una nueva pestaña o descargar directamente
-        const link = document.createElement('a');
-        link.href = response.downloadUrl;
-        link.download = `${empresa.nombre.replace(/[^a-z0-9]/gi, '_')}_archivos.zip`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+      if (!response.ok) {
+        throw new Error(`Error ${response.status}: ${response.statusText}`);
+      }
 
-        showNotification({
-          title: 'Descarga iniciada',
-          message: `Descargando archivos de ${empresa.nombre}`,
-          color: 'green',
-        });
-      } else {
+      // Verificar si hay contenido
+      const contentLength = response.headers.get('content-length');
+      if (contentLength === '0') {
         showNotification({
           title: 'Sin archivos',
           message: 'No hay archivos disponibles para descargar',
           color: 'yellow',
         });
+        return;
       }
+
+      // Obtener el blob del ZIP
+      const blob = await response.blob();
+      
+      // Crear URL temporal y descargar
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${empresa.nombre.replace(/[^a-z0-9]/gi, '_')}_archivos.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      showNotification({
+        title: 'Descarga completada',
+        message: `Archivos de ${empresa.nombre} descargados`,
+        color: 'green',
+      });
     } catch (error) {
       showNotification({
         title: 'Error',
@@ -813,8 +830,8 @@ export function SGIGenerado() {
                             e.stopPropagation();
                             handleDescargarEmpresaZip(empresa);
                           }}
-                          loading={downloadingZipId === empresa.companyUserId}
-                          disabled={downloadingZipId !== null}
+                          loading={downloadingZipId !== null && downloadingZipId === empresa.companyUserId}
+                          disabled={downloadingZipId !== null && downloadingZipId !== empresa.companyUserId}
                         >
                           Descargar ZIP
                         </Button>
