@@ -222,6 +222,7 @@ const formatFecha = (isoDate: string) => {
 
 export function SGIGenerado() {
   const auth = useAuth();
+  const isEmpresa = auth.userType === 'Empresa';
   const [uploadingFile, setUploadingFile] = useState(false);
   const [downloadingZipId, setDownloadingZipId] = useState<number | null>(null);
   const [empresas, setEmpresas] = useState<EmpresaGenerada[]>([]);
@@ -406,6 +407,41 @@ export function SGIGenerado() {
     const fetchEmpresas = async () => {
       try {
         setLoading(true);
+
+        // Para rol Empresa: cargar únicamente su propia empresa
+        if (auth.userType === 'Empresa' && auth.userId) {
+          const companyUserId = Number(auth.userId);
+          const empresaPropia: EmpresaGenerada = {
+            id: String(auth.userId),
+            nombre: auth.fullName || 'Mi Empresa',
+            puntos: [],
+            companyUserId,
+            email: undefined,
+            isActive: true,
+            profile: {
+              nombreEmpresa: auth.fullName || 'Mi Empresa',
+              rfc: '',
+              telefono: '',
+              responsableLegal: '',
+              subEmpresa: null,
+            },
+            subpointsStats: {
+              totalSubpoints: 0,
+              subpointsWithFiles: 0,
+            },
+            loadingPeriods: false,
+            periodsLoaded: false,
+          };
+
+          setEmpresas([empresaPropia]);
+          setExpandedEmpresa(String(auth.userId));
+
+          if (!Number.isNaN(companyUserId)) {
+            await loadCompanyPeriods(companyUserId);
+          }
+          return;
+        }
+
         const response = await BasicPetition({
           endpoint: '/templates/companies',
           method: 'GET',
@@ -439,7 +475,7 @@ export function SGIGenerado() {
     };
 
     fetchEmpresas();
-  }, []);
+  }, [auth.userId, auth.userType, auth.fullName, loadCompanyPeriods]);
 
   // Filtrar empresas por término de búsqueda
   const empresasFiltradas = empresas.filter((empresa) =>
@@ -762,7 +798,7 @@ export function SGIGenerado() {
   return (
     <Container size="xl" py="md">
       <Title order={2} mb="lg">
-        SGI Generado - Control 
+        {isEmpresa ? 'SGI Generado - Mi empresa' : 'SGI Generado - Control'}
       </Title>
 
       <Text size="sm" c="dimmed" mb="xl">
@@ -770,14 +806,16 @@ export function SGIGenerado() {
       </Text>
 
       {/* BUSCADOR DE EMPRESAS */}
-      <TextInput
-        placeholder="Buscar empresa..."
-        leftSection={<FaSearch size={14} />}
-        value={searchTerm}
-        onChange={(e) => setSearchTerm(e.currentTarget.value)}
-        mb="lg"
-        size="md"
-      />
+      {!isEmpresa && (
+        <TextInput
+          placeholder="Buscar empresa..."
+          leftSection={<FaSearch size={14} />}
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.currentTarget.value)}
+          mb="lg"
+          size="md"
+        />
+      )}
 
       {/* LOADER */}
       {loading && (
@@ -1054,7 +1092,7 @@ export function SGIGenerado() {
                                                 )}
 
                                                 {periodo.estado === 'vencido' && (
-                                                  auth.userType === 'Administrador' ? (
+                                                  (auth.userType === 'Administrador' || auth.userType === 'Empresa') ? (
                                                     <FileInput
                                                       placeholder="Subir (*Retraso)"
                                                       size="xs"
