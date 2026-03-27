@@ -57,6 +57,18 @@ interface Mensaje {
   tipo: UserRole;
 }
 
+interface ChatNotification {
+  notificationId: number;
+  type: string;
+  title: string;
+  body: string;
+  companyUserId: number | null;
+  templateSubpointId: number | null;
+  pointId: number | null;
+  createdAt: string;
+  readAt: string | null;
+}
+
 interface Periodo {
   id: string;
   nombre: string; // "Enero 2026", "Semana 1 Enero 2026"
@@ -232,11 +244,20 @@ export function SGI() {
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
   const [pdfError, setPdfError] = useState(false);
+  const chatSectionRef = useRef<HTMLDivElement | null>(null);
 
   // Estados para el chat
   const [nuevoMensaje, setNuevoMensaje] = useState('');
   const currentUserRole = getRoleLabel(auth.userType);
+  const isAuditor = currentUserRole === UserRole.AUDITOR;
   const canPostMessages = currentUserRole === UserRole.AUDITOR || currentUserRole === UserRole.EMPRESA;
+  const [chatNotifications, setChatNotifications] = useState<ChatNotification[]>([]);
+  const [loadingChatNotifications, setLoadingChatNotifications] = useState(false);
+  const [openingNotificationId, setOpeningNotificationId] = useState<number | null>(null);
+  const [pendingChatScroll, setPendingChatScroll] = useState(false);
+  const [openedNotificationsModal, setOpenedNotificationsModal] = useState(false);
+  const notificationsAutoOpenedRef = useRef(false);
+  const unreadNotificationsCount = chatNotifications.length;
 
   const extractMessagesArray = (response: any): any[] => {
     if (Array.isArray(response)) return response;
@@ -275,10 +296,183 @@ export function SGI() {
     };
   };
 
+  const mapSubpointFromApi = (sub: any): Subpunto => ({
+    id: String(sub.subpointId || sub.id),
+    templateSubpointId: String(sub.templateSubpointId || sub.template_subpoint_id || sub.subpointId || sub.id),
+    nombre: sub.nombre || sub.name,
+    periodicidad: mapPeriodicityToUI(sub.periodicidad || sub.periodicity),
+    archivoUpload: sub.archivoUpload || '',
+    archivoDownloadUrl: sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl || '',
+    estado: sub.estado !== false,
+    archivoCargado: sub.hasFiles === true || !!(sub.archivoUpload || sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl),
+    cambios: [],
+    mensajes: [],
+    auditPeriods: sub.auditPeriods || [],
+  });
+
+  const formatNotificationDate = (value: string): string => {
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      return '';
+    }
+
+    return date.toLocaleString('es-ES', {
+      dateStyle: 'short',
+      timeStyle: 'short',
+    });
+  };
+
+  const markNotificationAsRead = async (notificationId: number) => {
+    try {
+      await BasicPetition({
+        endpoint: `/notifications/${notificationId}/read`,
+        method: 'POST',
+        showNotifications: false,
+      });
+
+      setChatNotifications((prev) =>
+        prev.filter((item) => item.notificationId !== notificationId)
+      );
+    } catch (error) {
+      // No bloqueamos navegación al chat si falla el marcado de leído
+    }
+  };
+
+  const openSubpointViewer = (
+    subpunto: Subpunto,
+    context: { empresa: string; punto: string; puntoId: string },
+    focusChat = false
+  ) => {
+    setViewingSubpunto(subpunto);
+    setViewingContext(context);
+    setOpenedViewer(true);
+    setNuevoMensaje('');
+    setPendingChatScroll(focusChat);
+  };
+
   const getTemplateSubpointId = (subpunto: Subpunto): number => {
     const rawId = subpunto.templateSubpointId || subpunto.id;
     const parsed = Number(rawId);
     return Number.isNaN(parsed) ? 0 : parsed;
+  };
+
+  const handleOpenNotificationChat = async (notification: ChatNotification) => {
+    if (!notification.readAt) {
+      void markNotificationAsRead(notification.notificationId);
+    }
+
+    if (!notification.companyUserId || !notification.pointId || !notification.templateSubpointId) {
+      showNotification({
+        title: 'Notificación incompleta',
+        message: 'No fue posible ubicar el chat asociado a esta notificación.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    const companyId = String(notification.companyUserId);
+    const pointId = String(notification.pointId);
+    const templateSubpointId = String(notification.templateSubpointId);
+    const companyFromState = empresas.find((empresa) => empresa.id === companyId || empresa.empresaId === companyId);
+    const pointFromState = companyFromState?.puntos.find((point) => point.id === pointId);
+    const subpointFromState = pointFromState?.subpuntos.find(
+      (subpunto) => String(subpunto.templateSubpointId || subpunto.id) === templateSubpointId || subpunto.id === templateSubpointId
+    );
+
+    if (pointFromState && subpointFromState) {
+      openSubpointViewer(
+        subpointFromState,
+        {
+          empresa: companyFromState?.nombre || 'Empresa',
+          punto: pointFromState.nombre,
+          puntoId: pointFromState.id,
+        },
+        true
+      );
+      return;
+    }
+
+    setOpeningNotificationId(notification.notificationId);
+
+    try {
+      const pointsResponse = await BasicPetition({
+        endpoint: `/templates/companies/${companyId}/points`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+      const points = Array.isArray(pointsResponse) ? pointsResponse : [];
+      const matchedPoint = points.find((point: any) => String(point.pointId || point.id) === pointId);
+
+      if (!matchedPoint) {
+        throw new Error('No se encontró el punto asociado a la notificación.');
+      }
+
+      const subpointsResponse = await BasicPetition({
+        endpoint: `/templates/points/${pointId}/subpoints`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+      const subpoints = Array.isArray(subpointsResponse) ? subpointsResponse.map(mapSubpointFromApi) : [];
+      const matchedSubpoint = subpoints.find(
+        (subpunto) => String(subpunto.templateSubpointId || subpunto.id) === templateSubpointId || subpunto.id === templateSubpointId
+      );
+
+      if (!matchedSubpoint) {
+        throw new Error('No se encontró el subpunto asociado a la notificación.');
+      }
+
+      if (companyFromState) {
+        setEmpresas((prev) =>
+          prev.map((empresa) => {
+            if (empresa.id !== companyId && empresa.empresaId !== companyId) {
+              return empresa;
+            }
+
+            const existingPointIndex = empresa.puntos.findIndex((point) => point.id === pointId);
+            const nextPoint = {
+              id: pointId,
+              nombre: matchedPoint.nombre || matchedPoint.name || 'Punto',
+              subpuntos: subpoints,
+            };
+
+            if (existingPointIndex === -1) {
+              return {
+                ...empresa,
+                puntos: [...empresa.puntos, nextPoint],
+              };
+            }
+
+            return {
+              ...empresa,
+              puntos: empresa.puntos.map((point) =>
+                point.id === pointId ? nextPoint : point
+              ),
+            };
+          })
+        );
+      }
+
+      openSubpointViewer(
+        matchedSubpoint,
+        {
+          empresa: companyFromState?.nombre || `Empresa ${companyId}`,
+          punto: matchedPoint.nombre || matchedPoint.name || 'Punto',
+          puntoId: pointId,
+        },
+        true
+      );
+    } catch (error) {
+      showNotification({
+        title: 'No se pudo abrir el chat',
+        message: error instanceof Error ? error.message : 'Ocurrió un error al cargar el subpunto.',
+        color: 'red',
+      });
+    } finally {
+      setOpeningNotificationId(null);
+    }
   };
 
   const getSubpointFileUrl = (subpunto: Subpunto): string => {
@@ -286,6 +480,92 @@ export function SGI() {
     if (subpunto.archivoUpload) return `/${subpunto.archivoUpload}`;
     return '/sample.pdf';
   };
+
+  useEffect(() => {
+    if (!isAuditor) {
+      setChatNotifications([]);
+      setOpenedNotificationsModal(false);
+      notificationsAutoOpenedRef.current = false;
+      return;
+    }
+
+    let isMounted = true;
+
+    const loadNotifications = async () => {
+      setLoadingChatNotifications(true);
+
+      try {
+        const response = await BasicPetition({
+          endpoint: '/notifications',
+          method: 'GET',
+          showNotifications: false,
+        });
+
+        if (!isMounted) {
+          return;
+        }
+
+        const notifications = Array.isArray(response)
+          ? response
+              .filter((item: any) => item?.type === 'chat_message_created' && !item?.readAt)
+              .sort(
+                (a: any, b: any) =>
+                  new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime()
+              )
+              .slice(0, 20)
+          : [];
+
+        setChatNotifications(notifications);
+
+        if (notifications.length > 0 && !notificationsAutoOpenedRef.current) {
+          setOpenedNotificationsModal(true);
+          notificationsAutoOpenedRef.current = true;
+        }
+      } catch (error) {
+        if (isMounted) {
+          setChatNotifications([]);
+          setOpenedNotificationsModal(false);
+          showNotification({
+            title: 'No se pudieron cargar las notificaciones',
+            message: 'Intenta nuevamente en unos momentos.',
+            color: 'red',
+          });
+        }
+      } finally {
+        if (isMounted) {
+          setLoadingChatNotifications(false);
+        }
+      }
+    };
+
+    void loadNotifications();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuditor]);
+
+  useEffect(() => {
+    if (!loadingChatNotifications && unreadNotificationsCount === 0) {
+      setOpenedNotificationsModal(false);
+      notificationsAutoOpenedRef.current = false;
+    }
+  }, [loadingChatNotifications, unreadNotificationsCount]);
+
+  useEffect(() => {
+    if (!openedViewer || !pendingChatScroll) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      chatSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setPendingChatScroll(false);
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [openedViewer, pendingChatScroll, viewingSubpunto?.id]);
 
   const getFilenameFromDownloadUrl = (url: string): string => {
     if (!url) return '';
@@ -1277,19 +1557,7 @@ export function SGI() {
               id: pointId,
               nombre: punto.nombre || punto.name,
               subpuntos: Array.isArray(subpuntosFromAPI)
-                ? subpuntosFromAPI.map((sub: any) => ({
-                    id: String(sub.subpointId || sub.id),
-                    templateSubpointId: String(sub.templateSubpointId || sub.template_subpoint_id || sub.subpointId || sub.id),
-                    nombre: sub.nombre || sub.name,
-                    periodicidad: mapPeriodicityToUI(sub.periodicidad || sub.periodicity),
-                    archivoUpload: sub.archivoUpload || '',
-                  archivoDownloadUrl: sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl || '',
-                    estado: sub.estado !== false,
-                    archivoCargado: sub.hasFiles === true || !!(sub.archivoUpload || sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl),
-                    cambios: [],
-                    mensajes: [],
-                    auditPeriods: sub.auditPeriods || [],
-                  }))
+                ? subpuntosFromAPI.map(mapSubpointFromApi)
                 : [],
             };
           })
@@ -1977,6 +2245,26 @@ export function SGI() {
         SGI - Sistema de Gestión Información
       </Title>
 
+      {isAuditor && unreadNotificationsCount > 0 && (
+        <Group justify="space-between" mb="md">
+          <Group gap="xs">
+            <Text fw={600}>Notificaciones de chat</Text>
+            <Badge color="red" variant="light">
+              {unreadNotificationsCount}
+            </Badge>
+          </Group>
+          <Button
+            size="xs"
+            variant="light"
+            color="#a1a23b"
+            onClick={() => setOpenedNotificationsModal(true)}
+            loading={loadingChatNotifications}
+          >
+            Ver notificaciones
+          </Button>
+        </Group>
+      )}
+
       {/* 🔍 BUSCADOR - Solo mostrar si no es Empresa */}
       {auth?.userType !== 'Empresa' && (
         <Group justify="flex-end" mb="xl">
@@ -2176,9 +2464,7 @@ export function SGI() {
                                         variant="light"
                                         color="blue"
                                         onClick={() => {
-                                          setViewingSubpunto(subpunto);
-                                          setViewingContext({ empresa: empresas[0].nombre, punto: punto.nombre, puntoId: punto.id });
-                                          setOpenedViewer(true);
+                                          openSubpointViewer(subpunto, { empresa: empresas[0].nombre, punto: punto.nombre, puntoId: punto.id });
                                         }}
                                         leftSection={<FaEye size={12} />}
                                       >
@@ -2485,9 +2771,7 @@ export function SGI() {
                                                   variant="light"
                                                   color="#a1a23b"
                                                   onClick={() => {
-                                                    setViewingSubpunto(subpunto);
-                                                    setViewingContext({ empresa: empresa.nombre, punto: punto.nombre, puntoId: punto.id });
-                                                    setOpenedViewer(true);
+                                                    openSubpointViewer(subpunto, { empresa: empresa.nombre, punto: punto.nombre, puntoId: punto.id });
                                                   }}
                                                   leftSection={<FaEye size={12} />}
                                                 >
@@ -2786,6 +3070,76 @@ export function SGI() {
               Eliminar
             </Button>
           </Group>
+        </Stack>
+      </Modal>
+
+      {/* 🔔 MODAL DE NOTIFICACIONES DE CHAT */}
+      <Modal
+        opened={openedNotificationsModal}
+        onClose={() => setOpenedNotificationsModal(false)}
+        title="Notificaciones de chat"
+        size="lg"
+        centered
+      >
+        <Stack gap="md">
+
+          {loadingChatNotifications ? (
+            <Center py="lg">
+              <Stack gap="xs" align="center">
+                <Loader size="sm" color="#a1a23b" />
+                <Text size="sm" c="dimmed">Cargando notificaciones...</Text>
+              </Stack>
+            </Center>
+          ) : unreadNotificationsCount === 0 ? (
+            <Paper p="lg" radius="md" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+              <Text size="sm" c="dimmed" ta="center">
+                No hay notificaciones de mensajes por mostrar.
+              </Text>
+            </Paper>
+          ) : (
+            <Stack gap="sm" style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 4 }}>
+              {chatNotifications.map((notification) => (
+                <Paper key={notification.notificationId} p="md" withBorder radius="md" style={{ backgroundColor: 'white' }}>
+                  <Stack gap="sm">
+                    <Group justify="space-between" align="flex-start" wrap="nowrap">
+                      <Stack gap={4} style={{ flex: 1 }}>
+                        <Group gap="xs">
+                          <Text fw={600}>{notification.title || 'Nuevo mensaje en chat'}</Text>
+                          <Badge color={notification.readAt ? 'gray' : 'red'} variant="light" size="sm">
+                            {notification.readAt ? 'Leída' : 'Nueva'}
+                          </Badge>
+                        </Group>
+                        <Text size="sm" c="dimmed">
+                          {notification.body}
+                        </Text>
+                      </Stack>
+                      <Button
+                        size="xs"
+                        color="#a1a23b"
+                        variant="light"
+                        onClick={() => void handleOpenNotificationChat(notification)}
+                        loading={openingNotificationId === notification.notificationId}
+                      >
+                        Ir al chat
+                      </Button>
+                    </Group>
+
+                    <Group gap="xs">
+                      <Badge size="sm" variant="outline" color="blue">
+                        Punto {notification.pointId ?? 'N/A'}
+                      </Badge>
+                      <Badge size="sm" variant="outline" color="teal">
+                        Subpunto {notification.templateSubpointId ?? 'N/A'}
+                      </Badge>
+                      <Text size="xs" c="dimmed">
+                        {formatNotificationDate(notification.createdAt)}
+                      </Text>
+                    </Group>
+                  </Stack>
+                </Paper>
+              ))}
+            </Stack>
+          )}
         </Stack>
       </Modal>
 
@@ -3096,7 +3450,7 @@ export function SGI() {
             </Paper>
 
             {/* SECCIÓN: CHAT */}
-            <Paper p="xs" withBorder radius="md">
+            <Paper p="xs" withBorder radius="md" ref={chatSectionRef}>
               <Stack gap="xs">
                 <Group gap="xs">
                   <Text></Text>

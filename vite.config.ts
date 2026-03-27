@@ -32,6 +32,11 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
+      '/notifications': {
+        target: 'https://sgi-gservice-708746088485.us-central1.run.app',
+        changeOrigin: true,
+        secure: false,
+      },
       '/files': {
         target: 'https://sgi-gservice-708746088485.us-central1.run.app',
         changeOrigin: true,
