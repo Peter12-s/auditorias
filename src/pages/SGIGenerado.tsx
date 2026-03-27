@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Container,
   Title,
@@ -21,6 +21,7 @@ import {
 } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
 import { FaChevronDown, FaFileUpload, FaDownload, FaSearch, FaTrash, FaEye, FaFilePdf } from 'react-icons/fa';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../AuthContext';
 import { BasicPetition } from '../core/petition';
 
@@ -157,6 +158,15 @@ interface AlertReport {
   expiring: AlertPeriod[];
 }
 
+interface NavigationFocusTarget {
+  companyUserId: number | null;
+  pointId: string;
+  subpointId: string;
+  periodYear: number;
+  periodMonth: number | null;
+  focusTs: string;
+}
+
 // ==========================================
 // FUNCIONES HELPER
 // ==========================================
@@ -222,6 +232,7 @@ const formatFecha = (isoDate: string) => {
 
 export function SGIGenerado() {
   const auth = useAuth();
+  const [searchParams] = useSearchParams();
   const isEmpresa = auth.userType === 'Empresa';
   const [uploadingFile, setUploadingFile] = useState(false);
   const [downloadingZipId, setDownloadingZipId] = useState<number | null>(null);
@@ -229,12 +240,45 @@ export function SGIGenerado() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedEmpresa, setExpandedEmpresa] = useState<string | null>(null);
+  const [expandedPoints, setExpandedPoints] = useState<Record<string, string | null>>({});
+  const [expandedSubpoints, setExpandedSubpoints] = useState<Record<string, string | null>>({});
+  const [highlightedPeriodId, setHighlightedPeriodId] = useState<string | null>(null);
   
   // Estados para el modal de reporte de alertas
   const [reportModalOpened, setReportModalOpened] = useState(false);
   const [loadingReport, setLoadingReport] = useState(false);
   const [alertReport, setAlertReport] = useState<AlertReport | null>(null);
   const [reportEmpresaNombre, setReportEmpresaNombre] = useState<string>('');
+
+  const navigationFocusTarget = useMemo<NavigationFocusTarget | null>(() => {
+    const point = searchParams.get('point');
+    const subpoint = searchParams.get('subpoint');
+    const year = searchParams.get('year');
+    const focusTs = searchParams.get('focusTs') || '';
+
+    if (!point || !subpoint || !year) {
+      return null;
+    }
+
+    const parsedYear = Number(year);
+    if (Number.isNaN(parsedYear)) {
+      return null;
+    }
+
+    const monthParam = searchParams.get('month');
+    const companyParam = searchParams.get('company');
+    const parsedMonth = monthParam ? Number(monthParam) : null;
+    const parsedCompanyId = companyParam ? Number(companyParam) : null;
+
+    return {
+      companyUserId: parsedCompanyId !== null && !Number.isNaN(parsedCompanyId) ? parsedCompanyId : null,
+      pointId: point,
+      subpointId: subpoint,
+      periodYear: parsedYear,
+      periodMonth: parsedMonth !== null && !Number.isNaN(parsedMonth) ? parsedMonth : null,
+      focusTs,
+    };
+  }, [searchParams]);
 
   // Función para obtener el nombre del período
   const getPeriodName = (period: PeriodFromAPI, periodicity: string): string => {
@@ -392,6 +436,20 @@ export function SGIGenerado() {
     }
   }, []);
 
+  const handlePointAccordionChange = (empresaId: string, value: string | null) => {
+    setExpandedPoints((prev) => ({
+      ...prev,
+      [empresaId]: value,
+    }));
+  };
+
+  const handleSubpointAccordionChange = (empresaId: string, puntoId: string, value: string | null) => {
+    setExpandedSubpoints((prev) => ({
+      ...prev,
+      [`${empresaId}-${puntoId}`]: value,
+    }));
+  };
+
   // Manejar expansión de empresa
   const handleAccordionChange = (value: string | null) => {
     setExpandedEmpresa(value);
@@ -476,6 +534,72 @@ export function SGIGenerado() {
 
     fetchEmpresas();
   }, [auth.userId, auth.userType, auth.fullName, loadCompanyPeriods]);
+
+  useEffect(() => {
+    if (!navigationFocusTarget) {
+      return;
+    }
+
+    const companyId = navigationFocusTarget.companyUserId
+      ? String(navigationFocusTarget.companyUserId)
+      : (isEmpresa && auth.userId ? String(auth.userId) : expandedEmpresa);
+
+    if (!companyId) {
+      return;
+    }
+
+    const empresa = empresas.find((item) => item.id === companyId);
+    if (!empresa) {
+      return;
+    }
+
+    setExpandedEmpresa(companyId);
+
+    if (!empresa.periodsLoaded) {
+      if (empresa.companyUserId && !empresa.loadingPeriods) {
+        void loadCompanyPeriods(empresa.companyUserId);
+      }
+      return;
+    }
+
+    const targetPoint = empresa.puntos.find((punto) => punto.id === navigationFocusTarget.pointId);
+    if (!targetPoint) {
+      return;
+    }
+
+    const targetSubpoint = targetPoint.subpuntos.find((subpunto) => subpunto.id === navigationFocusTarget.subpointId);
+    if (!targetSubpoint) {
+      return;
+    }
+
+    const targetPeriodId = `${navigationFocusTarget.subpointId}-${navigationFocusTarget.periodYear}-${navigationFocusTarget.periodMonth || 0}`;
+
+    setExpandedPoints((prev) => ({
+      ...prev,
+      [companyId]: navigationFocusTarget.pointId,
+    }));
+
+    setExpandedSubpoints((prev) => ({
+      ...prev,
+      [`${companyId}-${navigationFocusTarget.pointId}`]: navigationFocusTarget.subpointId,
+    }));
+
+    setHighlightedPeriodId(targetPeriodId);
+
+    const scrollTimer = window.setTimeout(() => {
+      const targetElement = document.getElementById(`period-${targetPeriodId}`);
+      targetElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 250);
+
+    const clearHighlightTimer = window.setTimeout(() => {
+      setHighlightedPeriodId((current) => (current === targetPeriodId ? null : current));
+    }, 4500);
+
+    return () => {
+      window.clearTimeout(scrollTimer);
+      window.clearTimeout(clearHighlightTimer);
+    };
+  }, [navigationFocusTarget, empresas, isEmpresa, auth.userId, expandedEmpresa, loadCompanyPeriods]);
 
   // Filtrar empresas por término de búsqueda
   const empresasFiltradas = empresas.filter((empresa) =>
@@ -916,7 +1040,12 @@ export function SGIGenerado() {
 
                   <Stack gap="sm">
                     {empresa.puntos.map((punto) => (
-                      <Accordion key={punto.id} variant="separated">
+                      <Accordion
+                        key={punto.id}
+                        variant="separated"
+                        value={expandedPoints[empresa.id] === punto.id ? punto.id : null}
+                        onChange={(value) => handlePointAccordionChange(empresa.id, value)}
+                      >
                         <Accordion.Item value={punto.id}>
                           <Accordion.Control
                             style={{
@@ -942,7 +1071,12 @@ export function SGIGenerado() {
                             )}
 
                             {/* LISTA DE SUBPUNTOS */}
-                            <Accordion variant="contained" mt="sm">
+                            <Accordion
+                              variant="contained"
+                              mt="sm"
+                              value={expandedSubpoints[`${empresa.id}-${punto.id}`] ?? null}
+                              onChange={(value) => handleSubpointAccordionChange(empresa.id, punto.id, value)}
+                            >
                               {punto.subpuntos.map((subpunto) => (
                                 <Accordion.Item key={subpunto.id} value={subpunto.id}>
                                   <Accordion.Control
@@ -986,6 +1120,7 @@ export function SGIGenerado() {
                                         return (
                                           <Paper
                                             key={periodo.id}
+                                            id={`period-${periodo.id}`}
                                             p="sm"
                                             withBorder
                                             radius="sm"
@@ -994,6 +1129,9 @@ export function SGIGenerado() {
                                               borderColor: colors.border,
                                               borderWidth: '2px',
                                               opacity: periodo.disabled ? 0.6 : 1,
+                                              boxShadow: highlightedPeriodId === periodo.id ? '0 0 0 3px rgba(250, 176, 5, 0.45)' : undefined,
+                                              transform: highlightedPeriodId === periodo.id ? 'scale(1.01)' : undefined,
+                                              transition: 'box-shadow 0.2s ease, transform 0.2s ease',
                                             }}
                                           >
                                             <Group justify="space-between" wrap="nowrap">

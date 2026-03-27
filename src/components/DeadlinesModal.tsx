@@ -17,6 +17,7 @@ import {
   Accordion,
 } from '@mantine/core';
 import { FaExclamationTriangle, FaClock, FaCalendarTimes, FaCheckCircle, FaFire, FaBell } from 'react-icons/fa';
+import { useNavigate } from 'react-router-dom';
 import { BasicPetition } from '../core/petition';
 
 // ==========================================
@@ -65,6 +66,8 @@ interface DeadlinesModalProps {
   companyUserId: string | null;
 }
 
+type NavigableDeadline = MissingDeadline | ExpiringDeadline;
+
 // ==========================================
 // HELPERS
 // ==========================================
@@ -111,6 +114,7 @@ const getExpiringLevel = (daysUntilDue: number): { color: string; label: string 
 // ==========================================
 
 export function DeadlinesModal({ opened, onClose, companyUserId }: DeadlinesModalProps) {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [deadlines, setDeadlines] = useState<DeadlinesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -177,6 +181,26 @@ export function DeadlinesModal({ opened, onClose, companyUserId }: DeadlinesModa
     acc[key].items.push(item);
     return acc;
   }, {} as Record<number, { pointName: string; items: ExpiringDeadline[] }>) || {};
+
+  const handleGoToPendingItem = (item: NavigableDeadline) => {
+    const params = new URLSearchParams({
+      point: String(item.templatePointId),
+      subpoint: String(item.templateSubpointId),
+      year: String(item.periodYear),
+      focusTs: String(Date.now()),
+    });
+
+    if (companyUserId) {
+      params.set('company', companyUserId);
+    }
+
+    if (typeof item.periodMonth === 'number' && item.periodMonth > 0) {
+      params.set('month', String(item.periodMonth));
+    }
+
+    onClose();
+    navigate(`/sgi-generado?${params.toString()}`);
+  };
 
   return (
     <Modal
@@ -335,6 +359,14 @@ export function DeadlinesModal({ opened, onClose, companyUserId }: DeadlinesModa
                                         <Text size="sm" fw={700} c={urgency.color}>
                                           {item.daysOverdue} días de retraso
                                         </Text>
+                                        <Button
+                                          size="xs"
+                                          variant="light"
+                                          color={urgency.color}
+                                          onClick={() => handleGoToPendingItem(item)}
+                                        >
+                                          Ir al punto
+                                        </Button>
                                       </Stack>
                                     </Group>
                                   </Paper>
@@ -415,6 +447,14 @@ export function DeadlinesModal({ opened, onClose, companyUserId }: DeadlinesModa
                                         <Text size="sm" fw={600} c={level.color}>
                                           {item.daysUntilDue} días restantes
                                         </Text>
+                                        <Button
+                                          size="xs"
+                                          variant="light"
+                                          color={level.color}
+                                          onClick={() => handleGoToPendingItem(item)}
+                                        >
+                                          Ir al punto
+                                        </Button>
                                       </Stack>
                                     </Group>
                                   </Paper>
