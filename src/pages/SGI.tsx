@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Container,
   Title,
@@ -67,6 +67,12 @@ interface ChatNotification {
   pointId: number | null;
   createdAt: string;
   readAt: string | null;
+}
+
+interface GroupedChatNotification {
+  notification: ChatNotification;
+  count: number;
+  notificationIds: number[];
 }
 
 interface Periodo {
@@ -258,6 +264,35 @@ export function SGI() {
   const [openedNotificationsModal, setOpenedNotificationsModal] = useState(false);
   const notificationsAutoOpenedRef = useRef(false);
   const unreadNotificationsCount = chatNotifications.length;
+  const groupedUnreadNotifications = useMemo<GroupedChatNotification[]>(() => {
+    const grouped = new Map<string, GroupedChatNotification>();
+
+    for (const notification of chatNotifications) {
+      const key = `${notification.companyUserId ?? 'na'}-${notification.pointId ?? 'na'}-${notification.templateSubpointId ?? 'na'}`;
+      const existing = grouped.get(key);
+
+      if (!existing) {
+        grouped.set(key, {
+          notification,
+          count: 1,
+          notificationIds: [notification.notificationId],
+        });
+        continue;
+      }
+
+      const isNewer = new Date(notification.createdAt).getTime() > new Date(existing.notification.createdAt).getTime();
+      existing.count += 1;
+      existing.notificationIds.push(notification.notificationId);
+      if (isNewer) {
+        existing.notification = notification;
+      }
+    }
+
+    return Array.from(grouped.values()).sort(
+      (a, b) =>
+        new Date(b.notification.createdAt).getTime() - new Date(a.notification.createdAt).getTime()
+    );
+  }, [chatNotifications]);
 
   const extractMessagesArray = (response: any): any[] => {
     if (Array.isArray(response)) return response;
@@ -323,17 +358,30 @@ export function SGI() {
     });
   };
 
-  const markNotificationAsRead = async (notificationId: number) => {
-    try {
-      await BasicPetition({
-        endpoint: `/notifications/${notificationId}/read`,
-        method: 'POST',
-        showNotifications: false,
-      });
+  const markNotificationsAsRead = async (notificationIds: number[]) => {
+    const uniqueIds = Array.from(new Set(notificationIds));
 
-      setChatNotifications((prev) =>
-        prev.filter((item) => item.notificationId !== notificationId)
+    if (uniqueIds.length === 0) return;
+
+    try {
+      const results = await Promise.allSettled(
+        uniqueIds.map((notificationId) =>
+          BasicPetition({
+            endpoint: `/notifications/${notificationId}/read`,
+            method: 'POST',
+            showNotifications: false,
+          })
+        )
       );
+
+      const succeededIds = uniqueIds.filter((_, index) => results[index].status === 'fulfilled');
+
+      if (succeededIds.length > 0) {
+        const succeededSet = new Set(succeededIds);
+        setChatNotifications((prev) =>
+          prev.filter((item) => !succeededSet.has(item.notificationId))
+        );
+      }
     } catch (error) {
       // No bloqueamos navegación al chat si falla el marcado de leído
     }
@@ -357,9 +405,12 @@ export function SGI() {
     return Number.isNaN(parsed) ? 0 : parsed;
   };
 
-  const handleOpenNotificationChat = async (notification: ChatNotification) => {
+  const handleOpenNotificationChat = async (
+    notification: ChatNotification,
+    notificationIdsToMarkRead?: number[]
+  ) => {
     if (!notification.readAt) {
-      void markNotificationAsRead(notification.notificationId);
+      void markNotificationsAsRead(notificationIdsToMarkRead?.length ? notificationIdsToMarkRead : [notification.notificationId]);
     }
 
     if (!notification.companyUserId || !notification.pointId || !notification.templateSubpointId) {
@@ -3098,15 +3149,18 @@ export function SGI() {
             </Paper>
           ) : (
             <Stack gap="sm" style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 4 }}>
-              {chatNotifications.map((notification) => (
+              {groupedUnreadNotifications.map((groupedNotification) => {
+                const { notification, count, notificationIds } = groupedNotification;
+
+                return (
                 <Paper key={notification.notificationId} p="md" withBorder radius="md" style={{ backgroundColor: 'white' }}>
                   <Stack gap="sm">
                     <Group justify="space-between" align="flex-start" wrap="nowrap">
                       <Stack gap={4} style={{ flex: 1 }}>
                         <Group gap="xs">
                           <Text fw={600}>{notification.title || 'Nuevo mensaje en chat'}</Text>
-                          <Badge color={notification.readAt ? 'gray' : 'red'} variant="light" size="sm">
-                            {notification.readAt ? 'Leída' : 'Nueva'}
+                          <Badge color="red" variant="light" size="sm">
+                            {count > 1 ? `${count} nuevas` : 'Nueva'}
                           </Badge>
                         </Group>
                         <Text size="sm" c="dimmed">
@@ -3117,7 +3171,7 @@ export function SGI() {
                         size="xs"
                         color="#a1a23b"
                         variant="light"
-                        onClick={() => void handleOpenNotificationChat(notification)}
+                        onClick={() => void handleOpenNotificationChat(notification, notificationIds)}
                         loading={openingNotificationId === notification.notificationId}
                       >
                         Ir al chat
@@ -3137,7 +3191,8 @@ export function SGI() {
                     </Group>
                   </Stack>
                 </Paper>
-              ))}
+                );
+              })}
             </Stack>
           )}
         </Stack>
