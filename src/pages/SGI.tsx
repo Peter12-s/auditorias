@@ -2669,7 +2669,7 @@ export function SGI() {
                   </Paper>
 
                   {/* BOTÓN PARA AÑADIR PUNTO */}
-                  {getRoleLabel(auth.userType) !== UserRole.EMPRESA && (
+                  {getRoleLabel(auth.userType) == UserRole.ADMINISTRADOR && (
                     <Group justify="flex-end" mb="md">
                       <Button
                         leftSection={<FaPlus size={14} />}
@@ -2865,7 +2865,7 @@ export function SGI() {
                               )}
 
                               {/* BOTÓN PARA AÑADIR SUBPUNTO */}
-                              {getRoleLabel(auth.userType) !== UserRole.EMPRESA && (
+                              {getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR && (
                                 <Button
                                   size="xs"
                                   variant="light"
