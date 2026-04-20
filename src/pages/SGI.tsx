@@ -119,6 +119,7 @@ interface Subpunto {
   periodicidad: string; // Diaria, Semanal, Mensual, etc.
   archivoUpload?: string; // Ruta del archivo
   archivoDownloadUrl?: string; // URL firmada para visualizar/descargar
+  extraContentUrl?: string; // URL del archivo extra
   estado: boolean; // true = activo, false = inactivo
   archivoCargado: boolean; // true = tiene archivos, false = no tiene
   cambios: Cambio[]; // Historial de cambios
@@ -344,6 +345,7 @@ export function SGI() {
     periodicidad: mapPeriodicityToUI(sub.periodicidad || sub.periodicity),
     archivoUpload: sub.archivoUpload || '',
     archivoDownloadUrl: sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl || '',
+    extraContentUrl: sub.extraContentUrl || sub.extra_content_url || sub.extraFileUrl || sub.extra_file_url || '',
     estado: sub.estado !== false,
     archivoCargado: sub.hasFiles === true || !!(sub.archivoUpload || sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl),
     cambios: [],
@@ -2151,7 +2153,34 @@ export function SGI() {
         showNotifications: false,
       });
 
-      // Limpiar el input
+      const trimmedUrl = extraFileUrl.trim();
+      setViewingSubpunto((prev) =>
+        prev ? { ...prev, extraContentUrl: trimmedUrl } : prev
+      );
+
+      setEmpresas((prev) =>
+        prev.map((empresa) =>
+          empresa.id === viewingContext?.empresa || empresa.nombre === viewingContext?.empresa
+            ? {
+                ...empresa,
+                puntos: empresa.puntos.map((punto) =>
+                  punto.id === viewingContext?.puntoId
+                    ? {
+                        ...punto,
+                        subpuntos: punto.subpuntos.map((sp) =>
+                          sp.id === viewingSubpunto?.id
+                            ? { ...sp, extraContentUrl: trimmedUrl }
+                            : sp
+                        ),
+                      }
+                    : punto
+                ),
+              }
+            : empresa
+        )
+      );
+
+      // Limpiar el input para mostrar la URL actual en el placeholder
       setExtraFileUrl('');
 
       showNotification({
@@ -3585,23 +3614,47 @@ export function SGI() {
                   </Text>
 
                   {getRoleLabel(auth.userType) === UserRole.EMPRESA && (
-                    <Group gap="sm">
-                      <TextInput
-                        placeholder="Ingresa la URL del archivo (Drive, Dropbox, etc.)"
-                        value={extraFileUrl}
-                        onChange={(e) => setExtraFileUrl(e.currentTarget.value)}
-                        style={{ flex: 1 }}
-                        disabled={uploadingExtraFile}
-                      />
-                      <Button
-                        onClick={handleUploadExtraFile}
-                        loading={uploadingExtraFile}
-                        color="#4c6ef5"
-                        leftSection={<FaFileUpload size={16} />}
-                      >
-                        Subir
-                      </Button>
-                    </Group>
+                    <Stack gap="sm">
+                      <Group gap="sm">
+                        <TextInput
+                          placeholder={
+                            viewingSubpunto?.extraContentUrl 
+                              ? `URL: ${viewingSubpunto.extraContentUrl.length > 50 
+                                  ? viewingSubpunto.extraContentUrl.substring(0, 50) + '...' 
+                                  : viewingSubpunto.extraContentUrl}`
+                              : "Ingresa la URL del archivo (Drive, Dropbox, etc.)"
+                          }
+                          value={extraFileUrl}
+                          onChange={(e) => setExtraFileUrl(e.currentTarget.value)}
+                          style={{ flex: 1 }}
+                          disabled={uploadingExtraFile}
+                        />
+                        <Button
+                          onClick={handleUploadExtraFile}
+                          loading={uploadingExtraFile}
+                          color="#4c6ef5"
+                          leftSection={<FaFileUpload size={16} />}
+                        >
+                          Subir
+                        </Button>
+                      </Group>
+                      
+                      {viewingSubpunto?.extraContentUrl && (
+                        <Group gap="xs" align="center" style={{ backgroundColor: '#f0f9ff', padding: '8px 12px', borderRadius: '6px' }}>
+                          <Text size="sm" c="green" fw={500}>✓ URL actual:</Text>
+                          <Anchor 
+                            href={viewingSubpunto.extraContentUrl} 
+                            target="_blank" 
+                            rel="noreferrer" 
+                            size="sm" 
+                            lineClamp={1} 
+                            style={{ maxWidth: 400, color: '#228be6' }}
+                          >
+                            {viewingSubpunto.extraContentUrl}
+                          </Anchor>
+                        </Group>
+                      )}
+                    </Stack>
                   )}
 
                   {getRoleLabel(auth.userType) !== UserRole.EMPRESA && (
