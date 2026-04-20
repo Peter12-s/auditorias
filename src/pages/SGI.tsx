@@ -26,6 +26,7 @@ import {
   Pagination,
   Loader,
   Center,
+  Checkbox,
 } from '@mantine/core';
 import { MonthPickerInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
@@ -200,6 +201,7 @@ interface FormSubpunto {
   periodoInicio: Date | null;
   periodoFin: Date | null;
   duracionAnios: string;
+  isOnetime: boolean;
 }
 
 export function SGI() {
@@ -233,6 +235,10 @@ export function SGI() {
   const [openedCommentModal, setOpenedCommentModal] = useState(false);
   const [commentForUpdate, setCommentForUpdate] = useState('');
   const [pendingFileForUpdate, setPendingFileForUpdate] = useState<File | null>(null);
+  
+  // Estados para archivo extra
+  const [extraFileUrl, setExtraFileUrl] = useState('');
+  const [uploadingExtraFile, setUploadingExtraFile] = useState(false);
   
   // Estados para Excel
   const [excelData, setExcelData] = useState<any[][]>([]);
@@ -1046,6 +1052,7 @@ export function SGI() {
       periodoInicio: null,
       periodoFin: null,
       duracionAnios: '1',
+      isOnetime: false,
     },
     validate: {
       nombre: (value) => (!value ? 'El nombre es requerido' : null),
@@ -1246,6 +1253,120 @@ export function SGI() {
   // 💾 GUARDAR SUBPUNTO
   const handleSubmitSubpunto = async (values: FormSubpunto) => {
     if (!selectedEmpresa || !selectedPunto) return;
+
+    // Si es una sola vez, solo enviar nombre e isOnetime
+    if (values.isOnetime) {
+      if (editingSubpunto) {
+        // Editar subpunto existente
+        try {
+          await updateSubpoint(
+            parseInt(editingSubpunto.puntoId),
+            parseInt(editingSubpunto.subpunto.id),
+            values.nombre,
+            'monthly',
+            []
+          );
+
+          setEmpresas((prev) =>
+            prev.map((empresa) =>
+              empresa.id === selectedEmpresa
+                ? {
+                    ...empresa,
+                    puntos: empresa.puntos.map((punto) =>
+                      punto.id === selectedPunto
+                        ? {
+                            ...punto,
+                            subpuntos: punto.subpuntos.map((sp) =>
+                              sp.id === editingSubpunto.subpunto.id
+                                ? { 
+                                    ...sp, 
+                                    nombre: values.nombre,
+                                    periodicidad: 'Una sola vez',
+                                    estado: true,
+                                  }
+                                : sp
+                            ),
+                          }
+                        : punto
+                    ),
+                  }
+                : empresa
+            )
+          );
+          showNotification({
+            title: 'Subpunto actualizado',
+            message: 'El subpunto se actualizó correctamente',
+            color: 'green',
+          });
+        } catch (error) {
+          showNotification({
+            title: 'Error',
+            message: 'No se pudo actualizar el subpunto',
+            color: 'red',
+          });
+        }
+      } else {
+        // Crear nuevo subpunto con isOnetime
+        try {
+          const response = await createSubpoint(
+            parseInt(selectedPunto),
+            values.nombre,
+            'monthly',
+            []
+          );
+
+          setEmpresas((prev) =>
+            prev.map((empresa) =>
+              empresa.id === selectedEmpresa
+                ? {
+                    ...empresa,
+                    puntos: empresa.puntos.map((punto) =>
+                      punto.id === selectedPunto
+                        ? {
+                            ...punto,
+                            subpuntos: [
+                              ...punto.subpuntos,
+                              {
+                                id: String(response.subpointId || `${punto.id}-${punto.subpuntos.length + 1}`),
+                                templateSubpointId: String(
+                                  response.templateSubpointId ||
+                                  response.template_subpoint_id ||
+                                  response.subpointId ||
+                                  `${punto.id}-${punto.subpuntos.length + 1}`
+                                ),
+                                nombre: values.nombre,
+                                periodicidad: 'Una sola vez',
+                                estado: true,
+                                archivoCargado: false,
+                                cambios: [],
+                                mensajes: [],
+                              },
+                            ],
+                          }
+                        : punto
+                    ),
+                  }
+                : empresa
+            )
+          );
+
+          showNotification({
+            title: 'Subpunto creado',
+            message: 'El subpunto se creó correctamente',
+            color: 'green',
+          });
+        } catch (error) {
+          showNotification({
+            title: 'Error',
+            message: 'No se pudo crear el subpunto',
+            color: 'red',
+          });
+        }
+      }
+      setOpenedSubpunto(false);
+      formSubpunto.reset();
+      return;
+    }
 
     // Mapear periodicidad a valores de API
     const periodicity = mapPeriodicityToAPI(values.periodicidad);
@@ -2001,6 +2122,51 @@ export function SGI() {
     } catch (error) {
     } finally {
       setUploadingFile(false);
+    }
+  };
+
+  // 📎 SUBIR ARCHIVO EXTRA DESDE URL
+  const handleUploadExtraFile = async () => {
+    if (!extraFileUrl.trim() || !viewingSubpunto) {
+      showNotification({
+        title: 'URL requerida',
+        message: 'Ingresa una URL válida para continuar',
+        color: 'orange',
+      });
+      return;
+    }
+
+    setUploadingExtraFile(true);
+
+    try {
+      const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+      
+      // Actualizar la URL de contenido extra en el subpunto
+      await BasicPetition({
+        endpoint: `/templates/subpoints/${templateSubpointId}/extra-content-url`,
+        method: 'PATCH',
+        data: {
+          extraContentUrl: extraFileUrl.trim(),
+        },
+        showNotifications: false,
+      });
+
+      // Limpiar el input
+      setExtraFileUrl('');
+
+      showNotification({
+        title: 'Archivo extra cargado',
+        message: 'El archivo extra se ha cargado correctamente',
+        color: 'green',
+      });
+    } catch (error) {
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo cargar el archivo extra',
+        color: 'red',
+      });
+    } finally {
+      setUploadingExtraFile(false);
     }
   };
 
@@ -2983,24 +3149,32 @@ export function SGI() {
               {...formSubpunto.getInputProps('nombre')}
             />
 
-            <Select
-              label="Periodicidad"
-              placeholder="Seleccione periodicidad"
-              required
-              size="md"
-              data={[
-                { value: 'Mensual', label: 'Mensual' },
-                { value: 'Anual', label: 'Anual' },
-              ]}
-              {...formSubpunto.getInputProps('periodicidad')}
+            <Checkbox
+              label="Una sola vez (Sin periodos de auditoría)"
+              description="Marque esta opción si el subpunto solo debe ejecutarse una vez"
+              {...formSubpunto.getInputProps('isOnetime', { type: 'checkbox' })}
             />
 
-            {/* SECCIÓN DE PERIODO DE AUDITORÍA */}
-            <Paper p="md" withBorder radius="md" style={{ backgroundColor: '#f8f9fa' }}>
-              <Stack gap="md">
-                <Text fw={600} size="sm" c="dimmed">📅 Periodo de Auditoría</Text>
-                
-                {formSubpunto.values.periodicidad === 'Mensual' ? (
+            {!formSubpunto.values.isOnetime && (
+              <>
+                <Select
+                  label="Periodicidad"
+                  placeholder="Seleccione periodicidad"
+                  required
+                  size="md"
+                  data={[
+                    { value: 'Mensual', label: 'Mensual' },
+                    { value: 'Anual', label: 'Anual' },
+                  ]}
+                  {...formSubpunto.getInputProps('periodicidad')}
+                />
+
+                {/* SECCIÓN DE PERIODO DE AUDITORÍA */}
+                <Paper p="md" withBorder radius="md" style={{ backgroundColor: '#f8f9fa' }}>
+                  <Stack gap="md">
+                    <Text fw={600} size="sm" c="dimmed">📅 Periodo de Auditoría</Text>
+                    
+                    {formSubpunto.values.periodicidad === 'Mensual' ? (
                   <>
                     <Group grow>
                       <MonthPickerInput
@@ -3042,35 +3216,37 @@ export function SGI() {
                       </Paper>
                     )}
                   </>
-                ) : (
-                  <>
-                    <Select
-                      label="Duración del periodo"
-                      placeholder="Seleccione duración"
-                      required
-                      size="md"
-                      data={[
-                        { value: '1', label: `1 año (${new Date().getFullYear()})` },
-                        { value: '2', label: `2 años (${new Date().getFullYear()} - ${new Date().getFullYear() + 1})` },
-                      ]}
-                      {...formSubpunto.getInputProps('duracionAnios')}
-                    />
+                    ) : (
+                      <>
+                        <Select
+                          label="Duración del periodo"
+                          placeholder="Seleccione duración"
+                          required
+                          size="md"
+                          data={[
+                            { value: '1', label: `1 año (${new Date().getFullYear()})` },
+                            { value: '2', label: `2 años (${new Date().getFullYear()} - ${new Date().getFullYear() + 1})` },
+                          ]}
+                          {...formSubpunto.getInputProps('duracionAnios')}
+                        />
 
-                    <Paper p="sm" withBorder radius="sm" style={{ backgroundColor: '#e7f5ff' }}>
-                      <Group gap="xs">
-                        <Badge color="green" variant="light" size="lg">
-                          📆 Enero {new Date().getFullYear()}
-                        </Badge>
-                        <Text size="sm" c="dimmed">hasta</Text>
-                        <Badge color="green" variant="light" size="lg">
-                          📆 Diciembre {new Date().getFullYear() + parseInt(formSubpunto.values.duracionAnios || '1') - 1}
-                        </Badge>
-                      </Group>
-                    </Paper>
-                  </>
-                )}
-              </Stack>
-            </Paper>
+                        <Paper p="sm" withBorder radius="sm" style={{ backgroundColor: '#e7f5ff' }}>
+                          <Group gap="xs">
+                            <Badge color="green" variant="light" size="lg">
+                              📆 Enero {new Date().getFullYear()}
+                            </Badge>
+                            <Text size="sm" c="dimmed">hasta</Text>
+                            <Badge color="green" variant="light" size="lg">
+                              📆 Diciembre {new Date().getFullYear() + parseInt(formSubpunto.values.duracionAnios || '1') - 1}
+                            </Badge>
+                          </Group>
+                        </Paper>
+                      </>
+                    )}
+                  </Stack>
+                </Paper>
+              </>
+            )}
 
             <Group justify="flex-end" mt="lg">
               <Button
@@ -3389,6 +3565,57 @@ export function SGI() {
                 )}
               </Stack>
             </Paper>
+
+            {/* SECCIÓN: ARCHIVO EXTRA */}
+            {(getRoleLabel(auth.userType) === UserRole.EMPRESA || 
+              getRoleLabel(auth.userType) === UserRole.AUDITOR || 
+              getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR) && (
+              <Paper p="lg" withBorder radius="md" style={{ backgroundColor: '#f8f9fa' }}>
+                <Stack gap="md">
+                  <Group justify="space-between" align="center">
+                    <Group gap="xs">
+                      <Text size="lg" fw={600} c="#4c6ef5">📎 Archivo Extra</Text>
+                    </Group>
+                  </Group>
+                  
+                  <Text size="sm" c="dimmed">
+                    {getRoleLabel(auth.userType) === UserRole.EMPRESA 
+                      ? 'Carga un archivo adicional desde una URL'
+                      : 'Ver archivos extra cargados por la empresa'}
+                  </Text>
+
+                  {getRoleLabel(auth.userType) === UserRole.EMPRESA && (
+                    <Group gap="sm">
+                      <TextInput
+                        placeholder="Ingresa la URL del archivo (Drive, Dropbox, etc.)"
+                        value={extraFileUrl}
+                        onChange={(e) => setExtraFileUrl(e.currentTarget.value)}
+                        style={{ flex: 1 }}
+                        disabled={uploadingExtraFile}
+                      />
+                      <Button
+                        onClick={handleUploadExtraFile}
+                        loading={uploadingExtraFile}
+                        color="#4c6ef5"
+                        leftSection={<FaFileUpload size={16} />}
+                      >
+                        Subir
+                      </Button>
+                    </Group>
+                  )}
+
+                  {getRoleLabel(auth.userType) !== UserRole.EMPRESA && (
+                    <Paper p="md" style={{ backgroundColor: '#ffffff', minHeight: 80 }} radius="sm">
+                      <Stack gap="xs" align="center">
+                        <Text c="dimmed" ta="center" size="sm">
+                          Los archivos extra se mostrarán aquí cuando la empresa los cargue
+                        </Text>
+                      </Stack>
+                    </Paper>
+                  )}
+                </Stack>
+              </Paper>
+            )}
 
             {/* SECCIÓN: PARRILLA DE CAMBIOS */}
             <Paper p="xs" withBorder radius="md">
