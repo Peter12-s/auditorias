@@ -23,7 +23,7 @@ import { showNotification } from '@mantine/notifications';
 import { FaChevronDown, FaFileUpload, FaDownload, FaSearch, FaTrash, FaEye, FaFilePdf } from 'react-icons/fa';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../AuthContext';
-import { BasicPetition } from '../core/petition';
+import { BasicPetition, API_BASE_URL } from '../core/petition';
 
 // ==========================================
 // INTERFACES
@@ -615,9 +615,7 @@ export function SGIGenerado() {
     try {
       // Obtener el token de autenticación
       const token = localStorage.getItem('access_token');
-      const baseUrl = import.meta.env.VITE_API_URL || 'https://sgi-gservice-708746088485.us-central1.run.app';
-      
-      const response = await fetch(`${baseUrl}/audits/companies/${empresa.companyUserId}/audit-files/zip`, {
+      const response = await fetch(`${API_BASE_URL}/audits/companies/${empresa.companyUserId}/audit-files/zip`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,

@@ -9,9 +9,8 @@ interface PetitionOptions {
   skipRefresh?: boolean; // Para evitar loops infinitos en refresh
 }
 
-// En desarrollo, usa rutas relativas que serán proxy por Vite
-// En producción, usa la variable de entorno o la URL completa del backend
-const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? '' : 'https://sgi-gservice-708746088485.us-central1.run.app');
+// En desarrollo y en producción usa la variable de entorno o la URL completa del backend
+export const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://sgi-backend-1008998051554.us-central1.run.app';
 let isRefreshing = false;
 let refreshSubscribers: ((token: string) => void)[] = [];
 
@@ -109,12 +108,10 @@ export async function BasicPetition({
     const isJson = contentType && contentType.includes('application/json');
     
     if (!isJson) {
-      const responseText = await response.text();
-   
-      
       // Si es un error, mostrar el estado HTTP
       if (!response.ok) {
-        throw new Error(`Error ${response.status} ${response.statusText} en ${endpoint}. La respuesta no es JSON.`);
+        const responseText = await response.text();
+        throw new Error(`Error ${response.status} ${response.statusText} en ${endpoint}. La respuesta no es JSON: ${responseText}`);
       }
       
       // Si es OK pero no es JSON, asumir que es un array vacío
