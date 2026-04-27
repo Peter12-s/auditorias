@@ -9,7 +9,6 @@ import {
   Group,
   Stack,
   SimpleGrid,
-  Center,
   
 } from '@mantine/core';
 import { useMediaQuery } from '@mantine/hooks';

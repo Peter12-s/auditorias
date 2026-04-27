@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Container,
   Title,
@@ -24,11 +24,17 @@ import {
   Breadcrumbs,
   Anchor,
   Pagination,
+  Loader,
+  Center,
+  Checkbox,
 } from '@mantine/core';
+import { MonthPickerInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
 import { showNotification } from '@mantine/notifications';
-import { FaPlus, FaEdit, FaTrash, FaChevronDown, FaCheck, FaTimes, FaFileUpload, FaSearchPlus, FaSearchMinus } from 'react-icons/fa';
+import { FaPlus, FaEdit, FaTrash, FaChevronDown, FaCheck, FaTimes, FaFileUpload, FaSearchPlus, FaSearchMinus, FaEye, FaSearch } from 'react-icons/fa';
 import { useAuth } from '../AuthContext';
+import { BasicPetition, createPoint, createSubpoint, updatePoint, updateSubpoint, deletePoint, sendMessage, getMessages, uploadAuditFile, replaceAuditFile, getLatestAuditFile, getAuditFileChanges } from '../core/petition';
+import { UserRole, getRoleLabel } from '../core/constants';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
 import { renderAsync } from 'docx-preview';
@@ -49,7 +55,25 @@ interface Mensaje {
   fecha: string;
   hora: string;
   usuario: string;
-  tipo: 'empresa' | 'auditor' | 'admin';
+  tipo: UserRole;
+}
+
+interface ChatNotification {
+  notificationId: number;
+  type: string;
+  title: string;
+  body: string;
+  companyUserId: number | null;
+  templateSubpointId: number | null;
+  pointId: number | null;
+  createdAt: string;
+  readAt: string | null;
+}
+
+interface GroupedChatNotification {
+  notification: ChatNotification;
+  count: number;
+  notificationIds: number[];
 }
 
 interface Periodo {
@@ -81,15 +105,26 @@ interface EmpresaGenerada {
   puntos: PuntoGenerado[];
 }
 
+interface AuditPeriod {
+  startMonth: number;
+  startYear: number;
+  endMonth: number;
+  endYear: number;
+}
+
 interface Subpunto {
   id: string;
+  templateSubpointId?: string;
   nombre: string;
   periodicidad: string; // Diaria, Semanal, Mensual, etc.
   archivoUpload?: string; // Ruta del archivo
+  archivoDownloadUrl?: string; // URL firmada para visualizar/descargar
+  extraContentUrl?: string; // URL del archivo extra
   estado: boolean; // true = activo, false = inactivo
   archivoCargado: boolean; // true = tiene archivos, false = no tiene
   cambios: Cambio[]; // Historial de cambios
   mensajes: Mensaje[]; // Mensajes del chat
+  auditPeriods?: AuditPeriod[]; // Períodos de auditoría
 }
 
 interface Punto {
@@ -130,15 +165,30 @@ interface EmpresaGenerada {
 
 interface Empresa {
   id: string;
+  empresaId?: string;
   nombre: string;
+  subEmpresa?: string;
   puntos: Punto[];
   auditoresAsignados: string[]; // IDs de auditores asignados
+  // Estadísticas de subpuntos desde el backend
+  totalSubpoints?: number;
+  subpointsWithFiles?: number;
 }
 
 interface Auditor {
   id: string;
+  auditorUserId: number;
   nombre: string;
   correo: string;
+  email: string;
+  isActive: boolean;
+  profile?: {
+    nombre: string;
+    paterno: string;
+    materno: string;
+  };
+  assignedCompaniesCount?: number;
+  isAssignedToCompany?: boolean;
 }
 
 interface FormPunto {
@@ -149,6 +199,10 @@ interface FormSubpunto {
   nombre: string;
   periodicidad: string;
   estado: boolean;
+  periodoInicio: Date | null;
+  periodoFin: Date | null;
+  duracionAnios: string;
+  isOnetime: boolean;
 }
 
 export function SGI() {
@@ -158,6 +212,7 @@ export function SGI() {
   const [activeTab, setActiveTab] = useState<string>('configuracion');
   
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchPuntoQuery, setSearchPuntoQuery] = useState('');
   const [openedPunto, setOpenedPunto] = useState(false);
   const [openedSubpunto, setOpenedSubpunto] = useState(false);
   const [openedConfirm, setOpenedConfirm] = useState(false);
@@ -169,7 +224,7 @@ export function SGI() {
   const [selectedEmpresa, setSelectedEmpresa] = useState<string | null>(null);
   const [selectedPunto, setSelectedPunto] = useState<string | null>(null);
   const [viewingSubpunto, setViewingSubpunto] = useState<Subpunto | null>(null);
-  const [viewingContext, setViewingContext] = useState<{ empresa: string; punto: string } | null>(null);
+  const [viewingContext, setViewingContext] = useState<{ empresa: string; punto: string; puntoId: string } | null>(null);
   const [openedAuditores, setOpenedAuditores] = useState(false);
   const [selectedEmpresaForAuditores, setSelectedEmpresaForAuditores] = useState<string | null>(null);
   const [searchAuditor, setSearchAuditor] = useState('');
@@ -178,6 +233,13 @@ export function SGI() {
   const [uploadingFile, setUploadingFile] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 3;
+  const [openedCommentModal, setOpenedCommentModal] = useState(false);
+  const [commentForUpdate, setCommentForUpdate] = useState('');
+  const [pendingFileForUpdate, setPendingFileForUpdate] = useState<File | null>(null);
+  
+  // Estados para archivo extra
+  const [extraFileUrl, setExtraFileUrl] = useState('');
+  const [uploadingExtraFile, setUploadingExtraFile] = useState(false);
   
   // Estados para Excel
   const [excelData, setExcelData] = useState<any[][]>([]);
@@ -195,18 +257,396 @@ export function SGI() {
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
   const [pdfError, setPdfError] = useState(false);
-
-  // Estados para la parrilla de cambios
-  const [openedCambio, setOpenedCambio] = useState(false);
-  const [nuevoCambio, setNuevoCambio] = useState('');
+  const chatSectionRef = useRef<HTMLDivElement | null>(null);
 
   // Estados para el chat
   const [nuevoMensaje, setNuevoMensaje] = useState('');
+  const currentUserRole = getRoleLabel(auth.userType);
+  const isAuditor = currentUserRole === UserRole.AUDITOR;
+  const canPostMessages = currentUserRole === UserRole.AUDITOR || currentUserRole === UserRole.EMPRESA;
+  const [chatNotifications, setChatNotifications] = useState<ChatNotification[]>([]);
+  const [loadingChatNotifications, setLoadingChatNotifications] = useState(false);
+  const [openingNotificationId, setOpeningNotificationId] = useState<number | null>(null);
+  const [pendingChatScroll, setPendingChatScroll] = useState(false);
+  const [openedNotificationsModal, setOpenedNotificationsModal] = useState(false);
+  const notificationsAutoOpenedRef = useRef(false);
+  const unreadNotificationsCount = chatNotifications.length;
+  const groupedUnreadNotifications = useMemo<GroupedChatNotification[]>(() => {
+    const grouped = new Map<string, GroupedChatNotification>();
+
+    for (const notification of chatNotifications) {
+      const key = `${notification.companyUserId ?? 'na'}-${notification.pointId ?? 'na'}-${notification.templateSubpointId ?? 'na'}`;
+      const existing = grouped.get(key);
+
+      if (!existing) {
+        grouped.set(key, {
+          notification,
+          count: 1,
+          notificationIds: [notification.notificationId],
+        });
+        continue;
+      }
+
+      const isNewer = new Date(notification.createdAt).getTime() > new Date(existing.notification.createdAt).getTime();
+      existing.count += 1;
+      existing.notificationIds.push(notification.notificationId);
+      if (isNewer) {
+        existing.notification = notification;
+      }
+    }
+
+    return Array.from(grouped.values()).sort(
+      (a, b) =>
+        new Date(b.notification.createdAt).getTime() - new Date(a.notification.createdAt).getTime()
+    );
+  }, [chatNotifications]);
+
+  const extractMessagesArray = (response: any): any[] => {
+    if (Array.isArray(response)) return response;
+    if (Array.isArray(response?.messages)) return response.messages;
+    if (Array.isArray(response?.data)) return response.data;
+    if (Array.isArray(response?.items)) return response.items;
+    return [];
+  };
+
+  const mapChatMessage = (msg: any): Mensaje => {
+    const role = getRoleLabel(
+      msg?.senderRole ||
+      msg?.user?.role ||
+      msg?.role ||
+      msg?.tipo
+    );
+    const createdAt = msg?.createdAt || msg?.fecha || new Date().toISOString();
+    const createdAtDate = new Date(createdAt);
+
+    return {
+      id: String(msg?.id || msg?.messageId || `msg-${Date.now()}-${Math.random()}`),
+      texto: msg?.message || msg?.texto || '',
+      fecha: !Number.isNaN(createdAtDate.getTime())
+        ? createdAtDate.toLocaleDateString('es-ES')
+        : '',
+      hora: !Number.isNaN(createdAtDate.getTime())
+        ? createdAtDate.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+        : '',
+      usuario:
+        msg?.senderName ||
+        msg?.user?.fullname ||
+        msg?.user?.name ||
+        msg?.usuario ||
+        (role === UserRole.EMPRESA ? 'Empresa' : role),
+      tipo: role,
+    };
+  };
+
+  const mapSubpointFromApi = (sub: any): Subpunto => ({
+    id: String(sub.subpointId || sub.id),
+    templateSubpointId: String(sub.templateSubpointId || sub.template_subpoint_id || sub.subpointId || sub.id),
+    nombre: sub.nombre || sub.name,
+    periodicidad: mapPeriodicityToUI(sub.periodicidad || sub.periodicity),
+    archivoUpload: sub.archivoUpload || '',
+    archivoDownloadUrl: sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl || '',
+    extraContentUrl: sub.extraContentUrl || sub.extra_content_url || sub.extraFileUrl || sub.extra_file_url || '',
+    estado: sub.estado !== false,
+    archivoCargado: sub.hasFiles === true || !!(sub.archivoUpload || sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl),
+    cambios: [],
+    mensajes: [],
+    auditPeriods: sub.auditPeriods || [],
+  });
+
+  const formatNotificationDate = (value: string): string => {
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      return '';
+    }
+
+    return date.toLocaleString('es-ES', {
+      dateStyle: 'short',
+      timeStyle: 'short',
+    });
+  };
+
+  const markNotificationsAsRead = async (notificationIds: number[]) => {
+    const uniqueIds = Array.from(new Set(notificationIds));
+
+    if (uniqueIds.length === 0) return;
+
+    try {
+      const results = await Promise.allSettled(
+        uniqueIds.map((notificationId) =>
+          BasicPetition({
+            endpoint: `/notifications/${notificationId}/read`,
+            method: 'POST',
+            showNotifications: false,
+          })
+        )
+      );
+
+      const succeededIds = uniqueIds.filter((_, index) => results[index].status === 'fulfilled');
+
+      if (succeededIds.length > 0) {
+        const succeededSet = new Set(succeededIds);
+        setChatNotifications((prev) =>
+          prev.filter((item) => !succeededSet.has(item.notificationId))
+        );
+      }
+    } catch (error) {
+      // No bloqueamos navegación al chat si falla el marcado de leído
+    }
+  };
+
+  const openSubpointViewer = (
+    subpunto: Subpunto,
+    context: { empresa: string; punto: string; puntoId: string },
+    focusChat = false
+  ) => {
+    setViewingSubpunto(subpunto);
+    setViewingContext(context);
+    setOpenedViewer(true);
+    setNuevoMensaje('');
+    setPendingChatScroll(focusChat);
+  };
+
+  const getTemplateSubpointId = (subpunto: Subpunto): number => {
+    const rawId = subpunto.templateSubpointId || subpunto.id;
+    const parsed = Number(rawId);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
+
+  const handleOpenNotificationChat = async (
+    notification: ChatNotification,
+    notificationIdsToMarkRead?: number[]
+  ) => {
+    if (!notification.readAt) {
+      void markNotificationsAsRead(notificationIdsToMarkRead?.length ? notificationIdsToMarkRead : [notification.notificationId]);
+    }
+
+    if (!notification.companyUserId || !notification.pointId || !notification.templateSubpointId) {
+      showNotification({
+        title: 'Notificación incompleta',
+        message: 'No fue posible ubicar el chat asociado a esta notificación.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    const companyId = String(notification.companyUserId);
+    const pointId = String(notification.pointId);
+    const templateSubpointId = String(notification.templateSubpointId);
+    const companyFromState = empresas.find((empresa) => empresa.id === companyId || empresa.empresaId === companyId);
+    const pointFromState = companyFromState?.puntos.find((point) => point.id === pointId);
+    const subpointFromState = pointFromState?.subpuntos.find(
+      (subpunto) => String(subpunto.templateSubpointId || subpunto.id) === templateSubpointId || subpunto.id === templateSubpointId
+    );
+
+    if (pointFromState && subpointFromState) {
+      openSubpointViewer(
+        subpointFromState,
+        {
+          empresa: companyFromState?.nombre || 'Empresa',
+          punto: pointFromState.nombre,
+          puntoId: pointFromState.id,
+        },
+        true
+      );
+      return;
+    }
+
+    setOpeningNotificationId(notification.notificationId);
+
+    try {
+      const pointsResponse = await BasicPetition({
+        endpoint: `/templates/companies/${companyId}/points`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+      const points = Array.isArray(pointsResponse) ? pointsResponse : [];
+      const matchedPoint = points.find((point: any) => String(point.pointId || point.id) === pointId);
+
+      if (!matchedPoint) {
+        throw new Error('No se encontró el punto asociado a la notificación.');
+      }
+
+      const subpointsResponse = await BasicPetition({
+        endpoint: `/templates/points/${pointId}/subpoints`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+      const subpoints = Array.isArray(subpointsResponse) ? subpointsResponse.map(mapSubpointFromApi) : [];
+      const matchedSubpoint = subpoints.find(
+        (subpunto) => String(subpunto.templateSubpointId || subpunto.id) === templateSubpointId || subpunto.id === templateSubpointId
+      );
+
+      if (!matchedSubpoint) {
+        throw new Error('No se encontró el subpunto asociado a la notificación.');
+      }
+
+      if (companyFromState) {
+        setEmpresas((prev) =>
+          prev.map((empresa) => {
+            if (empresa.id !== companyId && empresa.empresaId !== companyId) {
+              return empresa;
+            }
+
+            const existingPointIndex = empresa.puntos.findIndex((point) => point.id === pointId);
+            const nextPoint = {
+              id: pointId,
+              nombre: matchedPoint.nombre || matchedPoint.name || 'Punto',
+              subpuntos: subpoints,
+            };
+
+            if (existingPointIndex === -1) {
+              return {
+                ...empresa,
+                puntos: [...empresa.puntos, nextPoint],
+              };
+            }
+
+            return {
+              ...empresa,
+              puntos: empresa.puntos.map((point) =>
+                point.id === pointId ? nextPoint : point
+              ),
+            };
+          })
+        );
+      }
+
+      openSubpointViewer(
+        matchedSubpoint,
+        {
+          empresa: companyFromState?.nombre || `Empresa ${companyId}`,
+          punto: matchedPoint.nombre || matchedPoint.name || 'Punto',
+          puntoId: pointId,
+        },
+        true
+      );
+    } catch (error) {
+      showNotification({
+        title: 'No se pudo abrir el chat',
+        message: error instanceof Error ? error.message : 'Ocurrió un error al cargar el subpunto.',
+        color: 'red',
+      });
+    } finally {
+      setOpeningNotificationId(null);
+    }
+  };
+
+  const getSubpointFileUrl = (subpunto: Subpunto): string => {
+    if (subpunto.archivoDownloadUrl) return subpunto.archivoDownloadUrl;
+    if (subpunto.archivoUpload) return `/${subpunto.archivoUpload}`;
+    return '/sample.pdf';
+  };
+
+  useEffect(() => {
+    if (!isAuditor) {
+      setChatNotifications([]);
+      setOpenedNotificationsModal(false);
+      notificationsAutoOpenedRef.current = false;
+      return;
+    }
+
+    let isMounted = true;
+
+    const loadNotifications = async () => {
+      setLoadingChatNotifications(true);
+
+      try {
+        const response = await BasicPetition({
+          endpoint: '/notifications',
+          method: 'GET',
+          showNotifications: false,
+        });
+
+        if (!isMounted) {
+          return;
+        }
+
+        const notifications = Array.isArray(response)
+          ? response
+              .filter((item: any) => item?.type === 'chat_message_created' && !item?.readAt)
+              .sort(
+                (a: any, b: any) =>
+                  new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime()
+              )
+              .slice(0, 20)
+          : [];
+
+        setChatNotifications(notifications);
+
+        if (notifications.length > 0 && !notificationsAutoOpenedRef.current) {
+          setOpenedNotificationsModal(true);
+          notificationsAutoOpenedRef.current = true;
+        }
+      } catch (error) {
+        if (isMounted) {
+          setChatNotifications([]);
+          setOpenedNotificationsModal(false);
+          showNotification({
+            title: 'No se pudieron cargar las notificaciones',
+            message: 'Intenta nuevamente en unos momentos.',
+            color: 'red',
+          });
+        }
+      } finally {
+        if (isMounted) {
+          setLoadingChatNotifications(false);
+        }
+      }
+    };
+
+    void loadNotifications();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuditor]);
+
+  useEffect(() => {
+    if (!loadingChatNotifications && unreadNotificationsCount === 0) {
+      setOpenedNotificationsModal(false);
+      notificationsAutoOpenedRef.current = false;
+    }
+  }, [loadingChatNotifications, unreadNotificationsCount]);
+
+  useEffect(() => {
+    if (!openedViewer || !pendingChatScroll) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      chatSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setPendingChatScroll(false);
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [openedViewer, pendingChatScroll, viewingSubpunto?.id]);
+
+  const getFilenameFromDownloadUrl = (url: string): string => {
+    if (!url) return '';
+    try {
+      const urlObj = new URL(url);
+      const rawName = urlObj.pathname.split('/').pop() || '';
+      return decodeURIComponent(rawName);
+    } catch {
+      const rawName = url.split('?')[0].split('/').pop() || '';
+      try {
+        return decodeURIComponent(rawName);
+      } catch {
+        return rawName;
+      }
+    }
+  };
 
   // Función para detectar tipo de archivo
   const getFileType = (filename: string): 'pdf' | 'image' | 'doc' | 'excel' | 'unknown' => {
     if (!filename) return 'unknown';
-    const ext = filename.toLowerCase().split('.').pop();
+    const normalized = filename.toLowerCase().split('?')[0].split('#')[0];
+    const ext = normalized.split('/').pop()?.split('.').pop();
     if (ext === 'pdf') return 'pdf';
     if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'].includes(ext || '')) return 'image';
     if (['doc', 'docx'].includes(ext || '')) return 'doc';
@@ -234,7 +674,6 @@ export function SGI() {
         setSelectedSheet(sheetNames[0]);
       }
     } catch (error) {
-      console.error('Error al cargar Excel:', error);
       showNotification({
         title: 'Error',
         message: 'No se pudo cargar el archivo Excel',
@@ -257,7 +696,6 @@ export function SGI() {
       setExcelData(data as any[][]);
       setSelectedSheet(sheetName);
     } catch (error) {
-      console.error('Error al cambiar de hoja:', error);
     } finally {
       setLoadingExcel(false);
     }
@@ -269,7 +707,6 @@ export function SGI() {
     
     setLoadingWord(true);
     try {
-      console.log('Intentando cargar Word desde:', fileUrl);
       const response = await fetch(fileUrl);
       
       if (!response.ok) {
@@ -277,7 +714,6 @@ export function SGI() {
       }
       
       const blob = await response.blob();
-      console.log('Archivo cargado, tamaño:', blob.size, 'bytes');
       
       // Limpiar contenedor
       container.innerHTML = '';
@@ -302,7 +738,6 @@ export function SGI() {
         color: 'green',
       });
     } catch (error) {
-      console.error('Error detallado al cargar Word:', error);
       showNotification({
         title: 'Error',
         message: `No se pudo cargar el archivo Word: ${error instanceof Error ? error.message : 'Error desconocido'}`,
@@ -313,235 +748,294 @@ export function SGI() {
     }
   };
 
-  // �🗂️ DATOS MOCK DE AUDITORES (simular desde localStorage o API)
+  // 📄 Cargar último archivo del subpunto al abrir el visor
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadLatestSubpointFile = async () => {
+      if (!openedViewer || !viewingSubpunto?.id) return;
+
+      const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+      if (!templateSubpointId) return;
+
+      try {
+        const latestFile = await getLatestAuditFile(templateSubpointId);
+        const latestDownloadUrl =
+          latestFile?.downloadUrl ||
+          latestFile?.file?.downloadUrl ||
+          '';
+
+        if (!latestDownloadUrl || isCancelled) return;
+
+        const latestFileName =
+          latestFile?.fileName ||
+          latestFile?.filename ||
+          latestFile?.originalName ||
+          latestFile?.file?.name ||
+          latestFile?.file?.fileName ||
+          getFilenameFromDownloadUrl(latestDownloadUrl) ||
+          viewingSubpunto.archivoUpload ||
+          '';
+
+        setViewingSubpunto((prev) =>
+          prev
+            ? {
+                ...prev,
+                archivoCargado: true,
+                archivoUpload: latestFileName,
+                archivoDownloadUrl: latestDownloadUrl,
+              }
+            : null
+        );
+
+        setEmpresas((prev) =>
+          prev.map((empresa) => {
+            if (empresa.nombre !== viewingContext?.empresa) return empresa;
+
+            return {
+              ...empresa,
+              puntos: empresa.puntos.map((punto) => {
+                if (punto.id !== viewingContext?.puntoId) return punto;
+
+                return {
+                  ...punto,
+                  subpuntos: punto.subpuntos.map((sp) =>
+                    sp.id === viewingSubpunto.id
+                      ? {
+                          ...sp,
+                          archivoCargado: true,
+                          archivoUpload: latestFileName,
+                          archivoDownloadUrl: latestDownloadUrl,
+                        }
+                      : sp
+                  ),
+                };
+              }),
+            };
+          })
+        );
+      } catch (error: any) {
+        if (error?.status !== 404 && error?.statusCode !== 404) {
+        }
+      }
+    };
+
+    loadLatestSubpointFile();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [openedViewer, viewingSubpunto?.id]);
+
   // 🔄 useEffect para cargar archivos automáticamente
   useEffect(() => {
-    if (openedViewer && viewingSubpunto?.archivoUpload && viewingSubpunto?.archivoCargado) {
-      const fileType = getFileType(viewingSubpunto.archivoUpload);
-      const fileUrl = `/${viewingSubpunto.archivoUpload}`;
-      
-      // Cargar Excel si es necesario
-      if (fileType === 'excel' && excelData.length === 0 && !loadingExcel) {
-        loadExcelFile(fileUrl);
-      }
-      
-      // Cargar Word si es necesario
-      if (fileType === 'doc' && !wordLoaded && !loadingWord) {
-        // Esperar a que el DOM esté listo
-        setTimeout(() => {
-          const wordContainerId = `word-container-${viewingSubpunto.id}`;
-          const container = document.getElementById(wordContainerId);
-          if (container) {
-            loadWordFile(fileUrl, container as HTMLDivElement);
-          }
-        }, 100);
-      }
-    }
-  }, [openedViewer, viewingSubpunto?.id, viewingSubpunto?.archivoCargado]);
+    if (openedViewer && viewingSubpunto?.archivoCargado) {
+      const fileSource = viewingSubpunto.archivoUpload || viewingSubpunto.archivoDownloadUrl;
+      if (!fileSource) return;
 
-  const [auditores] = useState<Auditor[]>([
-    { id: '1', nombre: 'María López Martínez', correo: 'auditor@dogroup.com' },
-    { id: '2', nombre: 'Carlos Sánchez Ruiz', correo: 'carlos.auditor@dogroup.com' },
-    { id: '3', nombre: 'Ana González Torres', correo: 'ana.auditor@dogroup.com' },
-  ]);
+      const fileType = getFileType(fileSource);
+      // Solo previsualizamos PDFs en el visor.
+      if (fileType !== 'pdf') return;
+    }
+  }, [openedViewer, viewingSubpunto?.id, viewingSubpunto?.archivoCargado, viewingSubpunto?.archivoUpload, viewingSubpunto?.archivoDownloadUrl]);
+
+  // 💬 useEffect para cargar mensajes del chat
+  useEffect(() => {
+    let intervalId: number | undefined;
+
+    const loadChatMessages = async () => {
+      if (!openedViewer || !viewingSubpunto?.id) return;
+
+      try {
+        const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+        if (!templateSubpointId) return;
+
+        const response = await getMessages(templateSubpointId);
+        const messages = extractMessagesArray(response).map(mapChatMessage);
+
+        setViewingSubpunto((prev) =>
+          prev ? { ...prev, mensajes: messages } : null
+        );
+      } catch (error) {
+      }
+    };
+    
+    loadChatMessages();
+
+    if (openedViewer && viewingSubpunto?.id) {
+      intervalId = window.setInterval(loadChatMessages, 600000); // 10 minutos
+    }
+
+    return () => {
+      if (intervalId) {
+        window.clearInterval(intervalId);
+      }
+    };
+  }, [openedViewer, viewingSubpunto?.id]);
+
+  // 📋 useEffect para cargar cambios desde el backend
+  useEffect(() => {
+    const loadChanges = async () => {
+      if (!openedViewer || !viewingSubpunto?.id) return;
+
+      try {
+        const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+        if (!templateSubpointId) return;
+
+        const response = await getAuditFileChanges(templateSubpointId);
+
+        // Mapear respuesta del backend a la estructura de Cambio
+        // El backend devuelve { events: [...] }
+        const events = response?.events || [];
+        const cambios = Array.isArray(events) ? events.map((event: any, index: number) => {
+          const fecha = event.at ? new Date(event.at).toLocaleDateString('es-MX', { 
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric'
+          }) : new Date().toLocaleDateString('es-MX');
+          
+          const fileName = event.file?.originalName || 'archivo';
+          const status = event.status === 'uploaded' ? 'Carga inicial' : 'Actualización';
+          
+          return {
+            id: String(event.submissionId || event.id || index + 1),
+            version: index + 1, // La versión es el índice + 1
+            descripcion: event.comment || `${status} - ${fileName}`,
+            fecha,
+            usuarioNombre: event.userFullName || event.user?.fullName || event.user?.name || getUserNameById(event.userId),
+            usuarioRol: event.user?.role || status,
+          };
+        }) : [];
+
+
+        setViewingSubpunto((prev) =>
+          prev ? { ...prev, cambios } : null
+        );
+      } catch (error) {
+      }
+    };
+
+    loadChanges();
+  }, [openedViewer, viewingSubpunto?.id]);
+
+  // Función para mapear periodicidad del backend a UI
+  const mapPeriodicityToUI = (periodicity: string | undefined): string => {
+    if (!periodicity) return 'Mensual';
+    const map: { [key: string]: string } = {
+      'monthly': 'Mensual',
+      'yearly': 'Anual',
+    };
+    return map[periodicity.toLowerCase()] || 'Mensual';
+  };
+
+  // Función para mapear periodicidad de UI a backend
+  const mapPeriodicityToAPI = (periodicidad: string): 'monthly' | 'yearly' => {
+    const map: { [key: string]: 'monthly' | 'yearly' } = {
+      'Mensual': 'monthly',
+      'Anual': 'yearly',
+    };
+    return map[periodicidad] || 'monthly';
+  };
+
+  const [auditores, setAuditores] = useState<Auditor[]>([]);
+  const [loadingAuditores, setLoadingAuditores] = useState(false);
+  const [empresasConDatos, setEmpresasConDatos] = useState<Set<string>>(new Set());
+  const [empresasCargando, setEmpresasCargando] = useState<Set<string>>(new Set());
+
+  // 👤 Función para obtener nombre de usuario por ID
+  const getUserNameById = (userId: number | string | undefined): string => {
+    if (!userId) return 'Usuario desconocido';
+    const id = String(userId);
+    
+    // Buscar en auditores
+    const auditor = auditores.find(a => String(a.id) === id);
+    if (auditor) return auditor.nombre;
+    
+    // Buscar en empresas
+    const empresa = empresas.find(e => String(e.id) === id || String(e.empresaId) === id);
+    if (empresa) return empresa.nombre;
+    
+    // Verificar si es el usuario actual
+    if (auth?.userId && String(auth.userId) === id) {
+      return 'Usuario actual';
+    }
+    
+    return `Usuario ID: ${id}`;
+  };
 
   // 🗂️ DATOS MOCK DE EMPRESAS
-  const [empresas, setEmpresas] = useState<Empresa[]>([
-    {
-      id: '1',
-      nombre: 'GRUPO TRASNACIONAL DE INFRAESTRUCTURA',
-      auditoresAsignados: ['1', '2'],
-      puntos: [
-        {
-          id: '1-1',
-          nombre: 'Sección para punto 1',
-          subpuntos: [
-            { 
-              id: '1-1-1', 
-              nombre: 'Subpunto 1.1', 
-              periodicidad: '',
-              estado: true,
-              archivoCargado: true,
-              archivoUpload: 'sample.pdf',
-              cambios: [],
-              mensajes: [
-                {
-                  id: '1-1-1-msg-1',
-                  texto: '¿Podrían revisar el documento que acabo de subir?',
-                  fecha: '15/01/2026',
-                  hora: '10:30',
-                  usuario: 'GRUPO TRASNACIONAL',
-                  tipo: 'empresa'
-                },
-                {
-                  id: '1-1-1-msg-2',
-                  texto: 'Revisado. Todo está correcto, pueden proceder con el siguiente paso.',
-                  fecha: '15/01/2026',
-                  hora: '14:20',
-                  usuario: 'María López',
-                  tipo: 'auditor'
-                },
-                {
-                  id: '1-1-1-msg-3',
-                  texto: 'Perfecto, gracias por la confirmación.',
-                  fecha: '15/01/2026',
-                  hora: '15:45',
-                  usuario: 'GRUPO TRASNACIONAL',
-                  tipo: 'empresa'
-                },
-              ],
-            },
-            { 
-              id: '1-1-2', 
-              nombre: 'Subpunto 1.2 - Documento Word',
-              periodicidad: 'Trimestral',
-              estado: true,
-              archivoCargado: true,
-              archivoUpload: 'Prueba.docx',
-              cambios: [],
-              mensajes: [],
-            },
-            { 
-              id: '1-1-3', 
-              nombre: 'Subpunto 1.3 - Hoja de Cálculo',
-              periodicidad: 'Mensual',
-              estado: true,
-              archivoCargado: true,
-              archivoUpload: '1A1.xlsx',
-              cambios: [],
-              mensajes: [],
-            },
-          ],
-        },
-        {
-          id: '1-2',
-          nombre: 'Sección para punto 2',
-          subpuntos: [
-            { 
-              id: '1-2-1', 
-              nombre: 'Subpunto 2.1',
-              periodicidad: 'Semanal',
-              estado: true,
-              archivoCargado: true,
-              archivoUpload: 'sample.pdf',
-              cambios: [],
-              mensajes: [
-                {
-                  id: '1-2-1-msg-1',
-                  texto: 'Necesitamos actualizar este documento antes de fin de mes.',
-                  fecha: '16/01/2026',
-                  hora: '09:15',
-                  usuario: 'Carlos Sánchez',
-                  tipo: 'auditor'
-                },
-              ],
-            },
-          ],
-        },
-        {
-          id: '1-3',
-          nombre: 'Sección para punto 3',
-          subpuntos: [],
-        },
-      ],
-    },
-    {
-      id: '2',
-      nombre: 'FABRICACIÓN DE ESTRUCTURAS METALICAS MONROY',
-      auditoresAsignados: [],
-      puntos: [
-        {
-          id: '2-1',
-          nombre: 'Sección para punto 1',
-          subpuntos: [],
-        },
-      ],
-    },
-    {
-      id: '3',
-      nombre: 'SOLUCIONES INTEGRALES EN ACEROS Y PROCESOS CIVAC',
-      auditoresAsignados: ['3'],
-      puntos: [],
-    },
-    {
-      id: '4',
-      nombre: 'CONSTRUCCIONES Y DESARROLLOS DEL NORTE',
-      auditoresAsignados: ['1'],
-      puntos: [
-        {
-          id: '4-1',
-          nombre: 'Sección para punto 1',
-          subpuntos: [
-            { 
-              id: '4-1-1', 
-              nombre: 'Subpunto 1.1', 
-              periodicidad: 'Mensual',
-              estado: true,
-              archivoCargado: false,
-              cambios: [],
-              mensajes: [],
-            },
-          ],
-        },
-      ],
-    },
-    {
-      id: '5',
-      nombre: 'COMERCIALIZADORA DE PRODUCTOS INDUSTRIALES SA',
-      auditoresAsignados: [],
-      puntos: [],
-    },
-    {
-      id: '6',
-      nombre: 'DISTRIBUIDORA DE MATERIALES DE CONSTRUCCIÓN',
-      auditoresAsignados: ['2'],
-      puntos: [
-        {
-          id: '6-1',
-          nombre: 'Sección para punto 1',
-          subpuntos: [],
-        },
-      ],
-    },
-    {
-      id: '7',
-      nombre: 'TECNOLOGÍA Y SISTEMAS INTEGRADOS DEL BAJÍO',
-      auditoresAsignados: ['1', '3'],
-      puntos: [],
-    },
-    {
-      id: '8',
-      nombre: 'MANUFACTURAS ESPECIALIZADAS DE OCCIDENTE',
-      auditoresAsignados: [],
-      puntos: [],
-    },
-    {
-      id: '9',
-      nombre: 'SERVICIOS LOGÍSTICOS Y TRANSPORTES MONTERREY',
-      auditoresAsignados: ['2'],
-      puntos: [],
-    },
-    {
-      id: '10',
-      nombre: 'INGENIERÍA Y PROYECTOS ESTRATÉGICOS DEL PACÍFICO',
-      auditoresAsignados: [],
-      puntos: [],
-    },
-    {
-      id: '11',
-      nombre: 'PROCESADORA DE ALIMENTOS DEL CENTRO',
-      auditoresAsignados: ['1'],
-      puntos: [],
-    },
-    {
-      id: '12',
-      nombre: 'CONSULTORÍA EMPRESARIAL Y DESARROLLO CORPORATIVO',
-      auditoresAsignados: ['3'],
-      puntos: [],
-    },
-  ]);
+  const [empresas, setEmpresas] = useState<Empresa[]>([]);
+  const empresasCargadasRef = useRef<boolean>(false);
 
-  // 📝 FORMULARIO PARA PUNTO
+  // � CARGAR EMPRESAS DESDE API
+  useEffect(() => {
+    const loadEmpresas = async () => {
+      if (empresasCargadasRef.current) return;
+      empresasCargadasRef.current = true;
+      
+      try {
+        
+        // Si es Empresa, solo cargar datos de su propia empresa
+        if (auth?.userType === 'Empresa' && auth?.userId) {
+          
+          // Crear una empresa con su ID
+          const empresaData: Empresa = {
+            id: String(auth.userId),
+            empresaId: String(auth.userId),
+            nombre: auth.fullName || 'Mi Empresa',
+            subEmpresa: undefined,
+            auditoresAsignados: [],
+            puntos: [],
+          };
+          
+          setEmpresas([empresaData]);
+          
+          // Cargar inmediatamente los puntos y auditores de su empresa
+          await new Promise(r => setTimeout(r, 100));
+          await Promise.all([
+            handleLoadPuntos(auth.userId),
+            handleLoadAuditores(auth.userId),
+          ]);
+        } else {
+          // Para otros roles (Admin, Auditor), cargar todas las empresas
+          const response = await BasicPetition({
+            endpoint: '/templates/companies',
+            method: 'GET',
+            showNotifications: false,
+          });
+          
+          
+          if (response && Array.isArray(response)) {
+            // Mapear respuesta de la API a la estructura Empresa
+            const empresasFromAPI = response.map((company: any) => ({
+              id: String(company.companyUserId),
+              empresaId: company.companyUserId,
+              nombre: company.profile?.nombreEmpresa || 'Sin nombre',
+              subEmpresa: company.profile?.subEmpresa,
+              auditoresAsignados: [],
+              puntos: [],
+            }));
+            
+            setEmpresas(empresasFromAPI);
+          } else {
+          }
+        }
+      } catch (error) {
+        showNotification({
+          title: 'Error al cargar empresas',
+          message: error instanceof Error ? error.message : 'No se pudieron cargar las empresas',
+          color: 'red',
+          autoClose: false,
+        });
+      }
+    };
+    
+    if (!empresasCargadasRef.current) {
+      loadEmpresas();
+    }
+  }, [auth]);
+
+  // �📝 FORMULARIO PARA PUNTO
   const formPunto = useForm<FormPunto>({
     initialValues: {
       nombre: '',
@@ -557,10 +1051,38 @@ export function SGI() {
       nombre: '',
       periodicidad: 'Mensual',
       estado: true,
+      periodoInicio: null,
+      periodoFin: null,
+      duracionAnios: '1',
+      isOnetime: false,
     },
     validate: {
       nombre: (value) => (!value ? 'El nombre es requerido' : null),
       periodicidad: (value) => (!value ? 'La periodicidad es requerida' : null),
+      periodoInicio: (value, values) => {
+        // Solo validar si es Mensual
+        if (values.periodicidad === 'Mensual' && !value) {
+          return 'El periodo de inicio es requerido';
+        }
+        return null;
+      },
+      periodoFin: (value, values) => {
+        // Solo validar si es Mensual
+        if (values.periodicidad === 'Mensual') {
+          if (!value) return 'El periodo de fin es requerido';
+          if (values.periodoInicio && value < values.periodoInicio) {
+            return 'El periodo de fin debe ser posterior al inicio';
+          }
+        }
+        return null;
+      },
+      duracionAnios: (value, values) => {
+        // Solo validar si es Anual
+        if (values.periodicidad === 'Anual' && !value) {
+          return 'La duración es requerida';
+        }
+        return null;
+      },
     },
   });
 
@@ -591,78 +1113,96 @@ export function SGI() {
     setOpenedPunto(true);
   };
 
-  // 💾 GUARDAR PUNTO
-  const handleSubmitPunto = (values: FormPunto) => {
+  const handleSubmitPunto = async (values: FormPunto) => {
     if (!selectedEmpresa) return;
 
     if (editingPunto) {
-      // Editar punto existente
-      setEmpresas((prev) =>
-        prev.map((empresa) =>
-          empresa.id === selectedEmpresa
-            ? {
-                ...empresa,
-                puntos: empresa.puntos.map((p) =>
-                  p.id === editingPunto.punto.id ? { ...p, nombre: values.nombre } : p
-                ),
-              }
-            : empresa
-        )
-      );
-      showNotification({
-        title: 'Punto actualizado',
-        message: 'El punto se actualizó correctamente',
-        color: 'green',
-      });
+      // Editar punto existente con PATCH
+      try {
+        await updatePoint(parseInt(editingPunto.empresaId), parseInt(editingPunto.punto.id), values.nombre);
+
+        setEmpresas((prev) =>
+          prev.map((empresa) =>
+            empresa.id === selectedEmpresa
+              ? {
+                  ...empresa,
+                  puntos: empresa.puntos.map((p) =>
+                    p.id === editingPunto.punto.id ? { ...p, nombre: values.nombre } : p
+                  ),
+                }
+              : empresa
+          )
+        );
+        showNotification({
+          title: 'Punto actualizado',
+          message: 'El punto se actualizó correctamente',
+          color: 'green',
+        });
+      } catch (error) {        showNotification({
+          title: 'Error',
+          message: 'No se pudo actualizar el punto',
+          color: 'red',
+        });
+      }
     } else {
-      // Crear nuevo punto
-      setEmpresas((prev) =>
-        prev.map((empresa) =>
-          empresa.id === selectedEmpresa
-            ? {
-                ...empresa,
-                puntos: [
-                  ...empresa.puntos,
-                  {
-                    id: `${empresa.id}-${empresa.puntos.length + 1}`,
-                    nombre: values.nombre,
-                    subpuntos: [],
-                  },
-                ],
-              }
-            : empresa
-        )
-      );
-      showNotification({
-        title: 'Punto creado',
-        message: 'El punto se creó correctamente',
-        color: 'green',
-      });
+      // Crear nuevo punto con POST al API
+      try {
+        const response = await createPoint(parseInt(selectedEmpresa), values.nombre);
+
+
+        // Recargar puntos después de crear
+        await handleLoadPuntos(selectedEmpresa);
+
+        showNotification({
+          title: 'Punto creado',
+          message: 'El punto se creó correctamente',
+          color: 'green',
+        });
+      } catch (error) {
+        showNotification({
+          title: 'Error',
+          message: 'No se pudo crear el punto',
+          color: 'red',
+        });
+      }
     }
     setOpenedPunto(false);
     formPunto.reset();
   };
 
   // 🗑️ ELIMINAR PUNTO
-  const handleDeletePunto = (empresaId: string, puntoId: string) => {
+  const handleDeletePunto = (empresaId: string, companyUserId: string, puntoId: string) => {
     setDeleteMessage('¿Eliminar este punto y todos sus subpuntos?');
     setDeleteAction(() => () => {
-      setEmpresas((prev) =>
-        prev.map((empresa) =>
-          empresa.id === empresaId
-            ? {
-                ...empresa,
-                puntos: empresa.puntos.filter((p) => p.id !== puntoId),
-              }
-            : empresa
-        )
-      );
-      showNotification({
-        title: 'Punto eliminado',
-        message: 'El punto se eliminó correctamente',
-        color: 'red',
-      });
-      setOpenedConfirm(false);
+      void deletePoint(parseInt(companyUserId), parseInt(puntoId))
+        .then(() => {
+          setEmpresas((prev) =>
+            prev.map((empresa) =>
+              empresa.id === empresaId
+                ? {
+                    ...empresa,
+                    puntos: empresa.puntos.filter((p) => p.id !== puntoId),
+                  }
+                : empresa
+            )
+          );
+
+          showNotification({
+            title: 'Punto eliminado',
+            message: 'El punto se eliminó correctamente',
+            color: 'red',
+          });
+        })
+        .catch((error) => {
+          showNotification({
+            title: 'Error',
+            message: 'No se pudo eliminar el punto',
+            color: 'red',
+          });
+        })
+        .finally(() => {
+          setOpenedConfirm(false);
+        });
     });
     setOpenedConfirm(true);
   };
@@ -681,86 +1221,293 @@ export function SGI() {
     setSelectedEmpresa(empresaId);
     setSelectedPunto(puntoId);
     setEditingSubpunto({ empresaId, puntoId, subpunto });
+    
+    // Prellenar períodos de auditoría si existen
+    let periodoInicio: Date | null = null;
+    let periodoFin: Date | null = null;
+    let duracionAnios = '1';
+    
+    if (subpunto.auditPeriods && subpunto.auditPeriods.length > 0) {
+      const firstPeriod = subpunto.auditPeriods[0];
+      
+      if (subpunto.periodicidad === 'Mensual') {
+        // Para mensual, usar startMonth/startYear y endMonth/endYear
+        // Usar Date.UTC para crear fechas en UTC y evitar problemas de zona horaria
+        periodoInicio = new Date(Date.UTC(firstPeriod.startYear, firstPeriod.startMonth - 1, 1));
+        periodoFin = new Date(Date.UTC(firstPeriod.endYear, firstPeriod.endMonth - 1, 1));
+      } else if (subpunto.periodicidad === 'Anual') {
+        // Para anual, calcular la duración en años
+        duracionAnios = String((firstPeriod.endYear - firstPeriod.startYear) + 1);
+      }
+    }
+    
     formSubpunto.setValues({ 
       nombre: subpunto.nombre,
       periodicidad: subpunto.periodicidad,
       estado: subpunto.estado,
+      periodoInicio,
+      periodoFin,
+      duracionAnios,
     });
     setOpenedSubpunto(true);
   };
 
   // 💾 GUARDAR SUBPUNTO
-  const handleSubmitSubpunto = (values: FormSubpunto) => {
+  const handleSubmitSubpunto = async (values: FormSubpunto) => {
     if (!selectedEmpresa || !selectedPunto) return;
 
-    if (editingSubpunto) {
-      // Editar subpunto existente
-      setEmpresas((prev) =>
-        prev.map((empresa) =>
-          empresa.id === selectedEmpresa
-            ? {
-                ...empresa,
-                puntos: empresa.puntos.map((punto) =>
-                  punto.id === selectedPunto
-                    ? {
-                        ...punto,
-                        subpuntos: punto.subpuntos.map((sp) =>
-                          sp.id === editingSubpunto.subpunto.id
-                            ? { 
-                                ...sp, 
+    // Si es una sola vez, solo enviar nombre e isOnetime
+    if (values.isOnetime) {
+      if (editingSubpunto) {
+        // Editar subpunto existente
+        try {
+          await updateSubpoint(
+            parseInt(editingSubpunto.puntoId),
+            parseInt(editingSubpunto.subpunto.id),
+            values.nombre,
+            'monthly',
+            []
+          );
+
+          setEmpresas((prev) =>
+            prev.map((empresa) =>
+              empresa.id === selectedEmpresa
+                ? {
+                    ...empresa,
+                    puntos: empresa.puntos.map((punto) =>
+                      punto.id === selectedPunto
+                        ? {
+                            ...punto,
+                            subpuntos: punto.subpuntos.map((sp) =>
+                              sp.id === editingSubpunto.subpunto.id
+                                ? { 
+                                    ...sp, 
+                                    nombre: values.nombre,
+                                    periodicidad: 'Una sola vez',
+                                    estado: true,
+                                  }
+                                : sp
+                            ),
+                          }
+                        : punto
+                    ),
+                  }
+                : empresa
+            )
+          );
+          showNotification({
+            title: 'Subpunto actualizado',
+            message: 'El subpunto se actualizó correctamente',
+            color: 'green',
+          });
+        } catch (error) {
+          showNotification({
+            title: 'Error',
+            message: 'No se pudo actualizar el subpunto',
+            color: 'red',
+          });
+        }
+      } else {
+        // Crear nuevo subpunto con isOnetime
+        try {
+          const response = await createSubpoint(
+            parseInt(selectedPunto),
+            values.nombre,
+            'monthly',
+            []
+          );
+
+          setEmpresas((prev) =>
+            prev.map((empresa) =>
+              empresa.id === selectedEmpresa
+                ? {
+                    ...empresa,
+                    puntos: empresa.puntos.map((punto) =>
+                      punto.id === selectedPunto
+                        ? {
+                            ...punto,
+                            subpuntos: [
+                              ...punto.subpuntos,
+                              {
+                                id: String(response.subpointId || `${punto.id}-${punto.subpuntos.length + 1}`),
+                                templateSubpointId: String(
+                                  response.templateSubpointId ||
+                                  response.template_subpoint_id ||
+                                  response.subpointId ||
+                                  `${punto.id}-${punto.subpuntos.length + 1}`
+                                ),
                                 nombre: values.nombre,
-                                periodicidad: values.periodicidad,
-                                estado: values.estado,
-                              }
-                            : sp
-                        ),
-                      }
-                    : punto
-                ),
-              }
-            : empresa
-        )
-      );
-      showNotification({
-        title: 'Subpunto actualizado',
-        message: 'El subpunto se actualizó correctamente',
-        color: 'green',
-      });
+                                periodicidad: 'Una sola vez',
+                                estado: true,
+                                archivoCargado: false,
+                                cambios: [],
+                                mensajes: [],
+                              },
+                            ],
+                          }
+                        : punto
+                    ),
+                  }
+                : empresa
+            )
+          );
+
+          showNotification({
+            title: 'Subpunto creado',
+            message: 'El subpunto se creó correctamente',
+            color: 'green',
+          });
+        } catch (error) {
+          showNotification({
+            title: 'Error',
+            message: 'No se pudo crear el subpunto',
+            color: 'red',
+          });
+        }
+      }
+      setOpenedSubpunto(false);
+      formSubpunto.reset();
+      return;
+    }
+
+    // Mapear periodicidad a valores de API
+    const periodicity = mapPeriodicityToAPI(values.periodicidad);
+
+    // Construir auditPeriods dependiendo de la periodicidad
+    let auditPeriods: { startMonth: number; startYear: number; endMonth: number; endYear: number }[] = [];
+    
+    if (values.periodicidad === 'Mensual' && values.periodoInicio && values.periodoFin) {
+      // Convertir a Date si no lo son
+      const inicio = values.periodoInicio instanceof Date ? values.periodoInicio : new Date(values.periodoInicio);
+      const fin = values.periodoFin instanceof Date ? values.periodoFin : new Date(values.periodoFin);
+      
+      // Usar getUTCMonth para evitar problemas de zona horaria
+      // MonthPickerInput puede devolver fechas en UTC que al convertir a local cambian de mes
+      auditPeriods = [{
+        startMonth: inicio.getUTCMonth() + 1,
+        startYear: inicio.getUTCFullYear(),
+        endMonth: fin.getUTCMonth() + 1,
+        endYear: fin.getUTCFullYear(),
+      }];
+    } else if (values.periodicidad === 'Anual') {
+      const currentYear = new Date().getFullYear();
+      const duracion = parseInt(values.duracionAnios) || 1;
+      auditPeriods = [{
+        startMonth: 1,
+        startYear: currentYear,
+        endMonth: 12,
+        endYear: currentYear + duracion - 1,
+      }];
+    }
+
+    if (editingSubpunto) {
+      // Editar subpunto existente con PATCH
+      try {
+        await updateSubpoint(
+          parseInt(editingSubpunto.puntoId),
+          parseInt(editingSubpunto.subpunto.id),
+          values.nombre,
+          periodicity,
+          auditPeriods
+        );
+
+        setEmpresas((prev) =>
+          prev.map((empresa) =>
+            empresa.id === selectedEmpresa
+              ? {
+                  ...empresa,
+                  puntos: empresa.puntos.map((punto) =>
+                    punto.id === selectedPunto
+                      ? {
+                          ...punto,
+                          subpuntos: punto.subpuntos.map((sp) =>
+                            sp.id === editingSubpunto.subpunto.id
+                              ? { 
+                                  ...sp, 
+                                  nombre: values.nombre,
+                                  periodicidad: values.periodicidad,
+                                  estado: values.estado,
+                                }
+                              : sp
+                          ),
+                        }
+                      : punto
+                  ),
+                }
+              : empresa
+          )
+        );
+        showNotification({
+          title: 'Subpunto actualizado',
+          message: 'El subpunto se actualizó correctamente',
+          color: 'green',
+        });
+      } catch (error) {
+        showNotification({
+          title: 'Error',
+          message: 'No se pudo actualizar el subpunto',
+          color: 'red',
+        });
+      }
     } else {
-      // Crear nuevo subpunto
-      setEmpresas((prev) =>
-        prev.map((empresa) =>
-          empresa.id === selectedEmpresa
-            ? {
-                ...empresa,
-                puntos: empresa.puntos.map((punto) =>
-                  punto.id === selectedPunto
-                    ? {
-                        ...punto,
-                        subpuntos: [
-                          ...punto.subpuntos,
-                          {
-                            id: `${punto.id}-${punto.subpuntos.length + 1}`,
-                            nombre: values.nombre,
-                            periodicidad: values.periodicidad,
-                            estado: values.estado,
-                            archivoCargado: false,
-                            cambios: [],
-                            mensajes: [],
-                          },
-                        ],
-                      }
-                    : punto
-                ),
-              }
-            : empresa
-        )
-      );
-      showNotification({
-        title: 'Subpunto creado',
-        message: 'El subpunto se creó correctamente',
-        color: 'green',
-      });
+      // Crear nuevo subpunto con POST al API
+      try {
+
+        const response = await createSubpoint(
+          parseInt(selectedPunto),
+          values.nombre,
+          periodicity,
+          auditPeriods
+        );
+
+        // Actualizar estado local
+        setEmpresas((prev) =>
+          prev.map((empresa) =>
+            empresa.id === selectedEmpresa
+              ? {
+                  ...empresa,
+                  puntos: empresa.puntos.map((punto) =>
+                    punto.id === selectedPunto
+                      ? {
+                          ...punto,
+                          subpuntos: [
+                            ...punto.subpuntos,
+                            {
+                              id: String(response.subpointId || `${punto.id}-${punto.subpuntos.length + 1}`),
+                              templateSubpointId: String(
+                                response.templateSubpointId ||
+                                response.template_subpoint_id ||
+                                response.subpointId ||
+                                `${punto.id}-${punto.subpuntos.length + 1}`
+                              ),
+                              nombre: values.nombre,
+                              periodicidad: values.periodicidad,
+                              estado: values.estado,
+                              archivoCargado: false,
+                              cambios: [],
+                              mensajes: [],
+                            },
+                          ],
+                        }
+                      : punto
+                  ),
+                }
+              : empresa
+          )
+        );
+
+        showNotification({
+          title: 'Subpunto creado',
+          message: 'El subpunto se creó correctamente',
+          color: 'green',
+        });
+      } catch (error) {
+        showNotification({
+          title: 'Error',
+          message: 'No se pudo crear el subpunto',
+          color: 'red',
+        });
+      }
     }
     setOpenedSubpunto(false);
     formSubpunto.reset();
@@ -797,79 +1544,466 @@ export function SGI() {
     setOpenedConfirm(true);
   };
 
-  // 👥 GESTIÓN DE AUDITORES
-  const handleOpenAuditores = (empresaId: string) => {
+  // 👥 GESTIÓN DE AUDITORES - ABRIR MODAL
+  const handleOpenAuditores = async (empresaId: string) => {
     setSelectedEmpresaForAuditores(empresaId);
     setOpenedAuditores(true);
+    
+    // Cargar lista completa de auditores para el modal
+    setLoadingAuditores(true);
+    try {
+      const response = await BasicPetition({
+        endpoint: `/templates/auditors?companyUserId=${empresaId}`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+
+      if (response && Array.isArray(response)) {
+        const auditoresFromAPI = response.map((auditor: any) => ({
+          id: String(auditor.auditorUserId),
+          auditorUserId: auditor.auditorUserId,
+          nombre: `${auditor.profile?.nombre || ''} ${auditor.profile?.paterno || ''} ${auditor.profile?.materno || ''}`.trim(),
+          correo: auditor.email,
+          email: auditor.email,
+          isActive: auditor.isActive,
+          profile: auditor.profile,
+          assignedCompaniesCount: auditor.assignedCompaniesCount,
+          isAssignedToCompany: auditor.isAssignedToCompany,
+        }));
+        setAuditores(auditoresFromAPI);
+      }
+    } catch (error) {
+      showNotification({
+        title: 'Error',
+        message: 'No se pudieron cargar los auditores',
+        color: 'red',
+      });
+    } finally {
+      setLoadingAuditores(false);
+    }
   };
 
-  const handleToggleAuditor = (auditorId: string) => {
+  // � CARGAR AUDITORES PARA UNA EMPRESA (sin abrir modal)
+  const handleLoadAuditores = async (empresaId: string) => {
+    try {
+      const response = await BasicPetition({
+        endpoint: `/templates/auditors?companyUserId=${empresaId}`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+      if (response && Array.isArray(response)) {
+        // Mapear datos completos de los auditores
+        const auditoresCompletos = response.map((auditor: any) => ({
+          id: String(auditor.auditorUserId),
+          auditorUserId: auditor.auditorUserId,
+          nombre: `${auditor.profile?.nombre || ''} ${auditor.profile?.paterno || ''} ${auditor.profile?.materno || ''}`.trim(),
+          correo: auditor.email,
+          email: auditor.email,
+          isActive: auditor.isActive,
+          profile: auditor.profile,
+          assignedCompaniesCount: auditor.assignedCompaniesCount,
+          isAssignedToCompany: auditor.isAssignedToCompany,
+        }));
+
+        // Guardar datos completos en el estado global de auditores, evitando duplicados
+        setAuditores((prev) => {
+          const auditoresMap = new Map(prev.map(a => [a.id, a]));
+          auditoresCompletos.forEach(auditor => {
+            auditoresMap.set(auditor.id, auditor);
+          });
+          return Array.from(auditoresMap.values());
+        });
+
+        // Filtrar solo los IDs de los auditores asignados
+        const auditoresAsignados = response
+          .filter((auditor: any) => auditor.isAssignedToCompany)
+          .map((auditor: any) => String(auditor.auditorUserId));
+        
+
+        // Actualizar el estado de empresas con los auditores asignados
+        setEmpresas((prev) =>
+          prev.map((emp) =>
+            emp.empresaId === empresaId || emp.id === empresaId
+              ? { ...emp, auditoresAsignados }
+              : emp
+          )
+        );
+      }
+    } catch (error) {
+    }
+  };
+
+  // � CARGAR DATOS DE EMPRESA (puntos y auditores al expandir)
+  const handleLoadEmpresaData = async (empresaId: string) => {
+    // Si ya tiene datos cargados, no volver a cargar
+    if (empresasConDatos.has(empresaId)) {
+      return;
+    }
+
+
+    // Marcar empresa como cargando
+    setEmpresasCargando((prev) => new Set([...prev, empresaId]));
+
+    try {
+      // Cargar en paralelo puntos, auditores y estadísticas de subpuntos
+      await Promise.all([
+        handleLoadPuntos(empresaId),
+        handleLoadAuditores(empresaId),
+        handleLoadSubpointStats(empresaId)
+      ]);
+
+      // Marcar empresa como cargada
+      setEmpresasConDatos((prev) => new Set([...prev, empresaId]));
+    } catch (error) {
+    } finally {
+      // Quitar empresa de la lista de cargando
+      setEmpresasCargando((prev) => {
+        const newSet = new Set(prev);
+        newSet.delete(empresaId);
+        return newSet;
+      });
+    }
+  };
+
+  // 📊 CARGAR ESTADÍSTICAS DE SUBPUNTOS
+  const handleLoadSubpointStats = async (empresaId: string) => {
+    try {
+      const response = await BasicPetition({
+        endpoint: `/templates/companies/${empresaId}/subpoints/stats`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+
+      if (response && typeof response.totalSubpoints === 'number') {
+        setEmpresas((prev) =>
+          prev.map((emp) =>
+            emp.id === empresaId || emp.empresaId === empresaId
+              ? {
+                  ...emp,
+                  totalSubpoints: response.totalSubpoints,
+                  subpointsWithFiles: response.subpointsWithFiles || 0,
+                }
+              : emp
+          )
+        );
+      }
+    } catch (error) {
+    }
+  };
+
+
+  // 🏗️ CARGAR SUBPUNTOS DE UN PUNTO
+  const handleLoadSubpoints = async (pointId: string) => {
+    try {
+      const response = await BasicPetition({
+        endpoint: `/templates/points/${pointId}/subpoints`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+
+      return Array.isArray(response) ? response : [];
+    } catch (error) {
+      return [];
+    }
+  };
+  // �📋 CARGAR PUNTOS DE UNA EMPRESA
+  const handleLoadPuntos = async (empresaId: string) => {
+    try {
+      const response = await BasicPetition({
+        endpoint: `/templates/companies/${empresaId}/points`,
+        method: 'GET',
+        showNotifications: false,
+      });
+
+
+      if (response && Array.isArray(response)) {
+        // Cargar subpuntos para cada punto en paralelo
+        const puntosWithSubpoints = await Promise.all(
+          response.map(async (punto: any) => {
+            const pointId = String(punto.pointId || punto.id);
+            const subpuntosFromAPI = await handleLoadSubpoints(pointId);
+            
+            return {
+              id: pointId,
+              nombre: punto.nombre || punto.name,
+              subpuntos: Array.isArray(subpuntosFromAPI)
+                ? subpuntosFromAPI.map(mapSubpointFromApi)
+                : [],
+            };
+          })
+        );
+
+
+        // Actualizar empresa con los puntos y subpuntos cargados
+        setEmpresas((prev) =>
+          prev.map((emp) =>
+            emp.id === empresaId || emp.empresaId === empresaId
+              ? { ...emp, puntos: puntosWithSubpoints }
+              : emp
+          )
+        );
+      }
+    } catch (error) {
+    }
+  };
+
+  const handleToggleAuditor = async (auditorId: string) => {
     if (!selectedEmpresaForAuditores) return;
 
-    setEmpresas((prev) =>
-      prev.map((empresa) => {
-        if (empresa.id === selectedEmpresaForAuditores) {
-          const isAssigned = empresa.auditoresAsignados.includes(auditorId);
-          return {
-            ...empresa,
-            auditoresAsignados: isAssigned
-              ? empresa.auditoresAsignados.filter((id) => id !== auditorId)
-              : [...empresa.auditoresAsignados, auditorId],
-          };
-        }
-        return empresa;
-      })
-    );
+    // Obtener empresa actual y verificar si el auditor ya está asignado
+    const empresaActual = empresas.find(e => e.id === selectedEmpresaForAuditores);
+    const isCurrentlyAssigned = empresaActual?.auditoresAsignados.includes(auditorId) || false;
+
+    try {
+      if (isCurrentlyAssigned) {
+        // DESASIGNAR - usar PATCH /deactivate
+    
+
+        await BasicPetition({
+          endpoint: '/templates/auditor-company-assignments/deactivate',
+          method: 'PATCH',
+          data: {
+            auditorUserId: Number(auditorId),
+            companyUserId: Number(selectedEmpresaForAuditores)
+          },
+          showNotifications: false,
+        });
+
+        showNotification({
+          title: 'Auditor desasignado',
+          message: 'El auditor ha sido removido de esta empresa',
+          color: 'orange',
+        });
+      } else {
+        // ASIGNAR - usar POST
+  
+
+        await BasicPetition({
+          endpoint: '/templates/auditor-company-assignments',
+          method: 'POST',
+          data: {
+            auditorUserId: Number(auditorId),
+            companyUserId: Number(selectedEmpresaForAuditores)
+          },
+          showNotifications: false,
+        });
+
+        showNotification({
+          title: 'Auditor asignado',
+          message: 'El auditor se asignó correctamente',
+          color: 'green',
+        });
+      }
+
+      // Actualizar estado local - toggle la asignación
+      setEmpresas((prev) =>
+        prev.map((empresa) => {
+          if (empresa.id === selectedEmpresaForAuditores) {
+            return {
+              ...empresa,
+              auditoresAsignados: isCurrentlyAssigned
+                ? empresa.auditoresAsignados.filter((id) => id !== auditorId)
+                : [...empresa.auditoresAsignados, auditorId],
+            };
+          }
+          return empresa;
+        })
+      );
+
+    } catch (error) {
+      showNotification({
+        title: 'Error',
+        message: isCurrentlyAssigned ? 'No se pudo desasignar el auditor' : 'No se pudo asignar el auditor',
+        color: 'red',
+      });
+    }
   };
 
-  // 📅 ACTUALIZAR PERIODICIDAD
-  const handleUpdatePeriodicidad = () => {
+  // � DESACTIVAR AUDITOR DE UNA EMPRESA
+  const handleDesactivarAuditor = async (auditorUserId: number, empresaId: string) => {
+    try {
+      await BasicPetition({
+        endpoint: '/templates/auditor-company-assignments/deactivate',
+        method: 'PATCH',
+        data: {
+          auditorUserId,
+          companyUserId: Number(empresaId)
+        },
+        showNotifications: false,
+      });
+      // Actualizar estado local
+      setEmpresas((prev) =>
+        prev.map((empresa) => {
+          if (empresa.id === empresaId) {
+            return {
+              ...empresa,
+              auditoresAsignados: empresa.auditoresAsignados.filter((id) => id !== String(auditorUserId)),
+            };
+          }
+          return empresa;
+        })
+      );
+
+      showNotification({
+        title: 'Auditor desactivado',
+        message: 'El auditor ha sido removido de esta empresa',
+        color: 'orange',
+      });
+    } catch (error) {
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo desactivar el auditor',
+        color: 'red',
+      });
+    }
+  };
+
+  // �📅 ACTUALIZAR PERIODICIDAD
+  const handleUpdatePeriodicidad = async () => {
     if (!viewingSubpunto || !viewingContext) return;
 
-    setEmpresas((prev) =>
-      prev.map((empresa) => {
-        if (empresa.nombre === viewingContext.empresa) {
-          return {
-            ...empresa,
-            puntos: empresa.puntos.map((punto) => {
-              if (punto.nombre === viewingContext.punto) {
-                return {
-                  ...punto,
-                  subpuntos: punto.subpuntos.map((sp) =>
-                    sp.id === viewingSubpunto.id
-                      ? { ...sp, periodicidad: tempPeriodicidad }
-                      : sp
-                  ),
-                };
-              }
-              return punto;
-            }),
-          };
-        }
-        return empresa;
-      })
-    );
+    try {
+      // Mapear periodicidad a valores de API
+      const periodicity = mapPeriodicityToAPI(tempPeriodicidad);
+      
 
-    setViewingSubpunto((prev) => prev ? { ...prev, periodicidad: tempPeriodicidad } : null);
-    setEditingPeriodicidad(false);
-    showNotification({
-      title: 'Periodicidad actualizada',
-      message: 'La periodicidad se actualizó correctamente',
-      color: 'green',
-    });
+      await updateSubpoint(parseInt(viewingContext.puntoId), parseInt(viewingSubpunto.id), viewingSubpunto.nombre, periodicity);
+
+      setEmpresas((prev) =>
+        prev.map((empresa) => {
+          if (empresa.nombre === viewingContext.empresa) {
+            return {
+              ...empresa,
+              puntos: empresa.puntos.map((punto) => {
+                if (punto.id === viewingContext.puntoId) {
+                  return {
+                    ...punto,
+                    subpuntos: punto.subpuntos.map((sp) =>
+                      sp.id === viewingSubpunto.id
+                        ? { ...sp, periodicidad: tempPeriodicidad }
+                        : sp
+                    ),
+                  };
+                }
+                return punto;
+              }),
+            };
+          }
+          return empresa;
+        })
+      );
+
+      setViewingSubpunto((prev) => prev ? { ...prev, periodicidad: tempPeriodicidad } : null);
+      setEditingPeriodicidad(false);
+      showNotification({
+        title: 'Periodicidad actualizada',
+        message: 'La periodicidad se actualizó correctamente',
+        color: 'green',
+      });
+    } catch (error) {
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo actualizar la periodicidad',
+        color: 'red',
+      });
+    }
   };
 
-  // 📎 MANEJAR SUBIDA DE ARCHIVO
-  const handleFileUpload = (file: File | null) => {
+  // � FUNCIÓN PARA CARGAR CAMBIOS DESDE BACKEND
+  const loadChangesFromBackend = async () => {
+    if (!viewingSubpunto?.id) return;
+
+    try {
+      const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+      if (!templateSubpointId) return;
+
+      const response = await getAuditFileChanges(templateSubpointId);
+      
+
+      // Mapear respuesta del backend a la estructura de Cambio
+      // El backend devuelve { events: [...] }
+      const events = response?.events || [];
+      const cambios = Array.isArray(events) ? events.map((event: any, index: number) => {
+        const fecha = event.at ? new Date(event.at).toLocaleDateString('es-MX', { 
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        }) : new Date().toLocaleDateString('es-MX');
+        
+        const fileName = event.file?.originalName || 'archivo';
+        const status = event.status === 'uploaded' ? 'Carga inicial' : 'Actualización';
+        
+        return {
+          id: String(event.submissionId || event.id || index + 1),
+          version: index + 1, // La versión es el índice + 1
+          descripcion: event.comment || `${status} - ${fileName}`,
+          fecha,
+          usuarioNombre: event.userFullName || event.user?.fullName || event.user?.name || getUserNameById(event.userId),
+          usuarioRol: event.user?.role || status,
+        };
+      }) : [];
+
+
+      setViewingSubpunto((prev) =>
+        prev ? { ...prev, cambios } : null
+      );
+    } catch (error) {
+    }
+  };
+
+  // �📎 MANEJAR SUBIDA DE ARCHIVO
+  const handleFileUpload = async (file: File | null) => {
     if (!file || !viewingSubpunto || !viewingContext) return;
+
+    const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+    if (!templateSubpointId) {
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo identificar el templateSubpointId para subir el archivo',
+        color: 'red',
+      });
+      return;
+    }
+
+    // Detectar si es actualización (ya hay archivo cargado)
+    const isUpdate = viewingSubpunto.archivoCargado;
+
+    if (isUpdate) {
+      // Abrir modal para solicitar comentario
+      setPendingFileForUpdate(file);
+      setCommentForUpdate('');
+      setOpenedCommentModal(true);
+      return;
+    }
+
+    // Es una carga inicial (no hay archivo previo)
+    await handleUploadNewFile(file);
+  };
+
+  // 📤 SUBIR ARCHIVO NUEVO (sin comentario)
+  const handleUploadNewFile = async (file: File) => {
+    if (!file || !viewingSubpunto || !viewingContext) return;
+
+    const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+    if (!templateSubpointId) return;
 
     setUploadingFile(true);
 
-    // Crear URL temporal del archivo para visualización
-    const fileUrl = URL.createObjectURL(file);
+    try {
+      
+      // Usar endpoint normal de upload
+      const uploadResponse = await uploadAuditFile(templateSubpointId, file);
+      const downloadUrl =
+        uploadResponse?.downloadUrl ||
+        uploadResponse?.archivoDownloadUrl ||
+        uploadResponse?.file?.downloadUrl ||
+        '';
 
-    // Simular upload (aquí iría la lógica de subida real)
-    setTimeout(() => {
+      // Actualizar estado local
       setEmpresas((prev) =>
         prev.map((empresa) => {
           if (empresa.nombre === viewingContext.empresa) {
@@ -881,7 +2015,7 @@ export function SGI() {
                     ...punto,
                     subpuntos: punto.subpuntos.map((sp) =>
                       sp.id === viewingSubpunto.id
-                        ? { ...sp, archivoCargado: true, archivoUpload: file.name }
+                        ? { ...sp, archivoCargado: true, archivoUpload: file.name, archivoDownloadUrl: downloadUrl }
                         : sp
                     ),
                   };
@@ -895,90 +2029,177 @@ export function SGI() {
       );
 
       setViewingSubpunto((prev) => 
-        prev ? { ...prev, archivoCargado: true, archivoUpload: file.name } : null
+        prev ? { ...prev, archivoCargado: true, archivoUpload: file.name, archivoDownloadUrl: downloadUrl } : null
       );
-      
-      // Guardar la URL del archivo temporalmente
-      sessionStorage.setItem(`file_${viewingSubpunto.id}`, fileUrl);
-      
-      setUploadingFile(false);
+
       showNotification({
-        title: viewingSubpunto.archivoCargado ? 'Archivo actualizado' : 'Archivo subido',
-        message: `El archivo "${file.name}" se ${viewingSubpunto.archivoCargado ? 'actualizó' : 'subió'} correctamente`,
+        title: 'Archivo cargado',
+        message: 'El archivo ha sido cargado correctamente',
         color: 'green',
       });
-    }, 1000);
+    } catch (error) {
+    } finally {
+      setUploadingFile(false);
+    }
   };
 
-  // 📝 AGREGAR CAMBIO
-  const handleAgregarCambio = () => {
-    if (!nuevoCambio.trim() || !viewingSubpunto || !viewingContext) return;
+  // 🔄 PROCESAR ACTUALIZACIÓN DE ARCHIVO CON COMENTARIO
+  const handleConfirmFileUpdate = async () => {
+    if (!pendingFileForUpdate || !viewingSubpunto || !viewingContext) return;
 
-    // Obtener nombre del usuario según el tipo
-    let nombreUsuario = '';
-    let rolUsuario = '';
-    
-    if (auth.userType === 'admin') {
-      nombreUsuario = 'Administrador del Sistema';
-      rolUsuario = 'Administrador';
-    } else if (auth.userType === 'auditor') {
-      // Buscar el nombre del auditor en la lista de auditores
-      const auditor = auditores.find(a => a.correo === 'auditor@dogroup.com'); // Aquí debería usar el correo del usuario logueado
-      nombreUsuario = auditor ? auditor.nombre : 'Auditor';
-      rolUsuario = 'Auditor';
+    // Validar comentario
+    if (!commentForUpdate.trim()) {
+      showNotification({
+        title: 'Comentario requerido',
+        message: 'Debes proporcionar un comentario para actualizar el archivo',
+        color: 'red',
+      });
+      return;
     }
 
-    const cambio: Cambio = {
-      id: `${viewingSubpunto.id}-cambio-${Date.now()}`,
-      version: viewingSubpunto.cambios.length,
-      descripcion: nuevoCambio,
-      fecha: new Date().toLocaleDateString('es-MX', { 
-        year: 'numeric', 
-        month: '2-digit', 
-        day: '2-digit' 
-      }),
-      usuarioNombre: nombreUsuario,
-      usuarioRol: rolUsuario,
-    };
+    const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+    if (!templateSubpointId) {
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo identificar el templateSubpointId',
+        color: 'red',
+      });
+      return;
+    }
 
-    setEmpresas((prev) =>
-      prev.map((empresa) => {
-        if (empresa.nombre === viewingContext.empresa) {
-          return {
-            ...empresa,
-            puntos: empresa.puntos.map((punto) => {
-              if (punto.nombre === viewingContext.punto) {
-                return {
-                  ...punto,
-                  subpuntos: punto.subpuntos.map((sp) =>
-                    sp.id === viewingSubpunto.id
-                      ? { ...sp, cambios: [...sp.cambios, cambio] }
-                      : sp
-                  ),
-                };
-              }
-              return punto;
-            }),
-          };
-        }
-        return empresa;
-      })
-    );
+    setUploadingFile(true);
+    setOpenedCommentModal(false);
 
-    setViewingSubpunto((prev) => 
-      prev ? { ...prev, cambios: [...prev.cambios, cambio] } : null
-    );
+    try {
+      
+      // Usar endpoint de replacement
+      const uploadResponse = await replaceAuditFile(templateSubpointId, pendingFileForUpdate, commentForUpdate);
+      const downloadUrl =
+        uploadResponse?.downloadUrl ||
+        uploadResponse?.archivoDownloadUrl ||
+        uploadResponse?.file?.downloadUrl ||
+        '';
 
-    setNuevoCambio('');
-    setOpenedCambio(false);
-    showNotification({
-      title: 'Cambio registrado',
-      message: `Versión ${cambio.version} agregada correctamente`,
-      color: 'green',
-    });
+      // Actualizar estado local
+      setEmpresas((prev) =>
+        prev.map((empresa) => {
+          if (empresa.nombre === viewingContext.empresa) {
+            return {
+              ...empresa,
+              puntos: empresa.puntos.map((punto) => {
+                if (punto.nombre === viewingContext.punto) {
+                  return {
+                    ...punto,
+                    subpuntos: punto.subpuntos.map((sp) =>
+                      sp.id === viewingSubpunto.id
+                        ? { ...sp, archivoCargado: true, archivoUpload: pendingFileForUpdate.name, archivoDownloadUrl: downloadUrl }
+                        : sp
+                    ),
+                  };
+                }
+                return punto;
+              }),
+            };
+          }
+          return empresa;
+        })
+      );
+
+      setViewingSubpunto((prev) => 
+        prev ? { ...prev, archivoCargado: true, archivoUpload: pendingFileForUpdate.name, archivoDownloadUrl: downloadUrl } : null
+      );
+
+      // Recargar los cambios después de actualizar
+      await loadChangesFromBackend();
+
+      showNotification({
+        title: 'Archivo actualizado',
+        message: 'El archivo ha sido actualizado correctamente',
+        color: 'green',
+      });
+
+      // Limpiar estados
+      setPendingFileForUpdate(null);
+      setCommentForUpdate('');
+    } catch (error) {
+    } finally {
+      setUploadingFile(false);
+    }
   };
 
-  // 📥 DESCARGAR REPORTE DE CAMBIOS
+  // 📎 SUBIR ARCHIVO EXTRA DESDE URL
+  const handleUploadExtraFile = async () => {
+    if (!extraFileUrl.trim() || !viewingSubpunto) {
+      showNotification({
+        title: 'URL requerida',
+        message: 'Ingresa una URL válida para continuar',
+        color: 'orange',
+      });
+      return;
+    }
+
+    setUploadingExtraFile(true);
+
+    try {
+      const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+      
+      // Actualizar la URL de contenido extra en el subpunto
+      await BasicPetition({
+        endpoint: `/templates/subpoints/${templateSubpointId}/extra-content-url`,
+        method: 'PATCH',
+        data: {
+          extraContentUrl: extraFileUrl.trim(),
+        },
+        showNotifications: false,
+      });
+
+      const trimmedUrl = extraFileUrl.trim();
+      setViewingSubpunto((prev) =>
+        prev ? { ...prev, extraContentUrl: trimmedUrl } : prev
+      );
+
+      setEmpresas((prev) =>
+        prev.map((empresa) =>
+          empresa.id === viewingContext?.empresa || empresa.nombre === viewingContext?.empresa
+            ? {
+                ...empresa,
+                puntos: empresa.puntos.map((punto) =>
+                  punto.id === viewingContext?.puntoId
+                    ? {
+                        ...punto,
+                        subpuntos: punto.subpuntos.map((sp) =>
+                          sp.id === viewingSubpunto?.id
+                            ? { ...sp, extraContentUrl: trimmedUrl }
+                            : sp
+                        ),
+                      }
+                    : punto
+                ),
+              }
+            : empresa
+        )
+      );
+
+      // Limpiar el input para mostrar la URL actual en el placeholder
+      setExtraFileUrl('');
+
+      showNotification({
+        title: 'Archivo extra cargado',
+        message: 'El archivo extra se ha cargado correctamente',
+        color: 'green',
+      });
+    } catch (error) {
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo cargar el archivo extra',
+        color: 'red',
+      });
+    } finally {
+      setUploadingExtraFile(false);
+    }
+  };
+
+  //  DESCARGAR REPORTE DE CAMBIOS
   const handleDescargarReporte = () => {
     if (!viewingSubpunto || !viewingContext) return;
 
@@ -1182,7 +2403,6 @@ export function SGI() {
     if (!file) return;
 
     // Aquí iría la lógica real de subida
-    console.log('Cargando archivo para periodo:', { empresaId, puntoId, subpuntoId, periodoId, file: file.name });
 
     showNotification({
       title: 'Archivo cargado',
@@ -1192,57 +2412,77 @@ export function SGI() {
   };
 
   // �💬 ENVIAR MENSAJE DE CHAT
-  const handleEnviarMensaje = () => {
+  const handleEnviarMensaje = async () => {
     if (!nuevoMensaje.trim() || !viewingSubpunto || !viewingContext) return;
+    if (!canPostMessages) return;
 
-    const mensaje: Mensaje = {
-      id: `${viewingSubpunto.id}-msg-${Date.now()}`,
-      texto: nuevoMensaje,
-      fecha: new Date().toLocaleDateString('es-MX', { 
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric'
-      }),
-      hora: new Date().toLocaleTimeString('es-MX', { 
-        hour: '2-digit', 
-        minute: '2-digit',
-        hour12: false
-      }),
-      usuario: auth.userType === 'admin' ? 'Administrador' : 
-               auth.userType === 'auditor' ? 'Auditor' : 
-               viewingContext.empresa,
-      tipo: auth.userType as 'empresa' | 'auditor' | 'admin'
-    };
+    try {
+      const templateSubpointId = getTemplateSubpointId(viewingSubpunto);
+      if (!templateSubpointId) {
+        showNotification({
+          title: 'Error',
+          message: 'No se pudo identificar el templateSubpointId para enviar el mensaje',
+          color: 'red',
+        });
+        return;
+      }
 
-    setEmpresas((prev) =>
-      prev.map((empresa) => {
-        if (empresa.nombre === viewingContext.empresa) {
-          return {
-            ...empresa,
-            puntos: empresa.puntos.map((punto) => {
-              if (punto.nombre === viewingContext.punto) {
-                return {
-                  ...punto,
-                  subpuntos: punto.subpuntos.map((sp) =>
-                    sp.id === viewingSubpunto.id
-                      ? { ...sp, mensajes: [...sp.mensajes, mensaje] }
-                      : sp
-                  ),
-                };
-              }
-              return punto;
-            }),
-          };
-        }
-        return empresa;
-      })
-    );
+      // Enviar mensaje al API
+      await sendMessage(templateSubpointId, nuevoMensaje);
 
-    setViewingSubpunto((prev) => 
-      prev ? { ...prev, mensajes: [...prev.mensajes, mensaje] } : null
-    );
+      const mensaje: Mensaje = {
+        id: `${viewingSubpunto.id}-msg-${Date.now()}`,
+        texto: nuevoMensaje,
+        fecha: new Date().toLocaleDateString('es-MX', { 
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        }),
+        hora: new Date().toLocaleTimeString('es-MX', { 
+          hour: '2-digit', 
+          minute: '2-digit',
+          hour12: false
+        }),
+        usuario: currentUserRole === UserRole.AUDITOR ? UserRole.AUDITOR : viewingContext.empresa,
+        tipo: currentUserRole,
+      };
 
-    setNuevoMensaje('');
+      setEmpresas((prev) =>
+        prev.map((empresa) => {
+          if (empresa.nombre === viewingContext.empresa) {
+            return {
+              ...empresa,
+              puntos: empresa.puntos.map((punto) => {
+                if (punto.id === viewingContext.puntoId) {
+                  return {
+                    ...punto,
+                    subpuntos: punto.subpuntos.map((sp) =>
+                      sp.id === viewingSubpunto.id
+                        ? { ...sp, mensajes: [...sp.mensajes, mensaje] }
+                        : sp
+                    ),
+                  };
+                }
+                return punto;
+              }),
+            };
+          }
+          return empresa;
+        })
+      );
+
+      setViewingSubpunto((prev) => 
+        prev ? { ...prev, mensajes: [...prev.mensajes, mensaje] } : null
+      );
+
+      setNuevoMensaje('');
+    } catch (error) {
+      showNotification({
+        title: 'Error',
+        message: 'No se pudo enviar el mensaje',
+        color: 'red',
+      });
+    }
   };
 
   return (
@@ -1251,35 +2491,279 @@ export function SGI() {
         SGI - Sistema de Gestión Información
       </Title>
 
-      {/* 🔍 BUSCADOR */}
-      <Group justify="flex-end" mb="xl">
-        <Input
-          placeholder="Buscar empresa..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.currentTarget.value)}
-          size="md"
-          style={{ width: '40%' }}
-        />
-       
-      </Group>
+      {isAuditor && unreadNotificationsCount > 0 && (
+        <Group justify="space-between" mb="md">
+          <Group gap="xs">
+            <Text fw={600}>Notificaciones de chat</Text>
+            <Badge color="red" variant="light">
+              {unreadNotificationsCount}
+            </Badge>
+          </Group>
+          <Button
+            size="xs"
+            variant="light"
+            color="#a1a23b"
+            onClick={() => setOpenedNotificationsModal(true)}
+            loading={loadingChatNotifications}
+          >
+            Ver notificaciones
+          </Button>
+        </Group>
+      )}
 
-      {/* 📋 LISTA DE EMPRESAS CON ACCORDION */}
-      <Stack gap="md">
-        {empresasPaginadas.map((empresa) => {
-          // Calcular progreso total de la empresa
-          const totalSubpuntos = empresa.puntos.reduce((sum, punto) => sum + punto.subpuntos.length, 0);
-          const subpuntosConArchivo = empresa.puntos.reduce(
-            (sum, punto) => sum + punto.subpuntos.filter(s => s.archivoCargado).length,
-            0
-          );
+      {/* 🔍 BUSCADOR - Solo mostrar si no es Empresa */}
+      {auth?.userType !== 'Empresa' && (
+        <Group justify="flex-end" mb="xl">
+          <Input
+            placeholder="Buscar empresa..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.currentTarget.value)}
+            size="md"
+            style={{ width: '40%' }}
+          />
+         
+        </Group>
+      )}
+
+      {/* 📋 VISTA PARA EMPRESA - Mostrar directamente los puntos sin accordion de empresa */}
+      {auth?.userType === 'Empresa' ? (
+        <Stack gap="md">
+          {empresas.length === 0 ? (
+            <Paper p="xl" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+              <Text c="dimmed" ta="center">
+                Cargando datos de tu empresa...
+              </Text>
+            </Paper>
+          ) : (
+            <Stack gap="md">
+              {/* 🔍 BUSCADOR DE PUNTOS PARA EMPRESA */}
+              <Input
+                placeholder="Buscar punto..."
+                value={searchPuntoQuery}
+                onChange={(e) => setSearchPuntoQuery(e.currentTarget.value)}
+                size="md"
+                leftSection={<FaSearch size={14} />}
+              />
+
+              {/* BARRA DE PROGRESO GENERAL */}
+              {(() => {
+                const totalSubpuntos = empresas[0].puntos.reduce(
+                  (sum, punto) => sum + punto.subpuntos.length,
+                  0
+                );
+                const subpuntosConArchivo = empresas[0].puntos.reduce(
+                  (sum, punto) => sum + punto.subpuntos.filter((s) => s.archivoCargado).length,
+                  0
+                );
+                const progreso = totalSubpuntos > 0 ? (subpuntosConArchivo / totalSubpuntos) * 100 : 0;
+
+                return (
+                  <Paper p="md" withBorder style={{ backgroundColor: '#f0f9ff', borderColor: '#74c0fc' }}>
+                    <Stack gap="xs">
+                      <Group justify="space-between">
+                        <Text size="sm" fw={600} c="blue.7">
+                          Progreso General de Documentación
+                        </Text>
+                        <Badge size="lg" color={progreso === 100 ? 'green' : progreso > 50 ? 'blue' : 'orange'}>
+                          {subpuntosConArchivo} / {totalSubpuntos} completados
+                        </Badge>
+                      </Group>
+                      <Progress
+                        value={progreso}
+                        size="lg"
+                        radius="xl"
+                        color={progreso === 100 ? 'green' : progreso > 50 ? 'blue' : 'orange'}
+                        striped={progreso < 100}
+                        animated={progreso < 100 && progreso > 0}
+                      />
+                      <Text size="xs" c="dimmed" ta="center">
+                        {progreso === 100
+                          ? '✅ ¡Todos los documentos han sido cargados!'
+                          : `${Math.round(progreso)}% completado - Faltan ${totalSubpuntos - subpuntosConArchivo} subpuntos por cargar`}
+                      </Text>
+                    </Stack>
+                  </Paper>
+                );
+              })()}
+
+              <Paper p="md" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+                <Stack gap="sm">
+                  <Text size="sm" fw={600} c="dimmed">Auditores Asignados:</Text>
+                  {empresas[0].auditoresAsignados.length === 0 ? (
+                    <Text size="sm" c="dimmed" fs="italic">Sin auditores asignados</Text>
+                  ) : (
+                    <Group gap="xs" wrap="wrap">
+                      {empresas[0].auditoresAsignados.map((auditorId) => {
+                        const auditor = auditores.find(a => a.id === auditorId);
+                        return auditor ? (
+                          <Badge key={auditor.id} size="lg" color="teal" variant="dot">
+                            {auditor.nombre}
+                          </Badge>
+                        ) : null;
+                      })}
+                    </Group>
+                  )}
+                </Stack>
+              </Paper>
+
+              {(() => {
+                const puntosFiltrados = empresas[0].puntos.filter((punto) =>
+                  punto.nombre.toLowerCase().includes(searchPuntoQuery.toLowerCase())
+                );
+
+                if (empresas[0].puntos.length === 0) {
+                  return (
+                    <Paper p="xl" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+                      <Text c="dimmed" ta="center" py="xl">
+                        No hay puntos registrados para tu empresa
+                      </Text>
+                    </Paper>
+                  );
+                }
+
+                if (puntosFiltrados.length === 0) {
+                  return (
+                    <Paper p="xl" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+                      <Text c="dimmed" ta="center" py="xl">
+                        No se encontraron puntos que coincidan con "{searchPuntoQuery}"
+                      </Text>
+                    </Paper>
+                  );
+                }
+
+                return (
+                  <Accordion
+                    chevronPosition="right"
+                    defaultValue={null}
+                    styles={{
+                      chevron: {
+                        fontSize: 16,
+                        marginRight: 0,
+                      }
+                    }}
+                  >
+                    {puntosFiltrados.map((punto) => (
+                      <Accordion.Item
+                        key={punto.id}
+                        value={punto.id}
+                        style={{
+                          backgroundColor: '#e8eaa6',
+                          border: '1px solid #d4d68f',
+                          marginBottom: 8,
+                          borderRadius: 6,
+                        }}
+                      >
+                        <Accordion.Control
+                          style={{
+                            padding: '12px 14px',
+                        }}
+                      >
+                        <Stack gap={4} style={{ flex: 1 }}>
+                          <Text fw={600} size="lg" c="#4a4a4a">
+                            {punto.nombre}
+                          </Text>
+                          {punto.subpuntos.length > 0 && (
+                            <Text size="xs" c="dimmed">
+                              {punto.subpuntos.filter((s) => s.archivoCargado).length} / {punto.subpuntos.length} completados
+                            </Text>
+                          )}
+                        </Stack>
+                      </Accordion.Control>
+
+                      <Accordion.Panel style={{ padding: '14px' }}>
+                        <Stack gap="md">
+                          {/* LISTA DE SUBPUNTOS */}
+                          {punto.subpuntos.length === 0 ? (
+                            <Text c="dimmed" ta="center" py="md">
+                              No hay subpuntos registrados para este punto
+                            </Text>
+                          ) : (
+                            <Stack gap="sm">
+                              {punto.subpuntos.map((subpunto) => (
+                                <Paper
+                                  key={subpunto.id}
+                                  p="sm"
+                                  withBorder
+                                  radius="sm"
+                                  style={{
+                                    backgroundColor: subpunto.archivoCargado ? '#e7f5ff' : '#f8f9fa',
+                                    borderLeft: `4px solid ${subpunto.archivoCargado ? '#1971c2' : '#ced4da'}`
+                                  }}
+                                >
+                                  <Group justify="space-between" align="center">
+                                    <Stack gap={4} style={{ flex: 1 }}>
+                                      <Group gap="xs" align="center">
+                                        <Text fw={500}>{subpunto.nombre}</Text>
+                                        <Badge size="sm" variant="light">
+                                          {subpunto.periodicidad}
+                                        </Badge>
+                                        {subpunto.archivoCargado && (
+                                          <Badge size="sm" color="green" leftSection={<FaCheck size={12} />}>
+                                            Completado
+                                          </Badge>
+                                        )}
+                                      </Group>
+                                    </Stack>
+                                    <Group gap="xs">
+                                      <Button
+                                        size="xs"
+                                        variant="light"
+                                        color="blue"
+                                        onClick={() => {
+                                          openSubpointViewer(subpunto, { empresa: empresas[0].nombre, punto: punto.nombre, puntoId: punto.id });
+                                        }}
+                                        leftSection={<FaEye size={12} />}
+                                      >
+                                        Ver
+                                      </Button>
+                                    </Group>
+                                  </Group>
+                                </Paper>
+                              ))}
+                            </Stack>
+                          )}
+                        </Stack>
+                      </Accordion.Panel>
+                    </Accordion.Item>
+                  ))}
+                  </Accordion>
+                );
+              })()}
+            </Stack>
+          )}
+        </Stack>
+      ) : (
+        /* 📋 VISTA PARA ADMIN/AUDITOR - Lista de empresas con accordion */
+        <Stack gap="md">
+        {empresasPaginadas.length === 0 ? (
+          <Paper p="xl" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+            <Text c="dimmed" ta="center">
+              {empresas.length === 0 
+                ? 'Cargando empresas...' 
+                : 'No se encontraron empresas que coincidan con tu búsqueda'}
+            </Text>
+          </Paper>
+        ) : (
+          empresasPaginadas.map((empresa) => {
+          // Usar estadísticas del backend si están disponibles, sino calcular localmente
+          const totalSubpuntos = empresa.totalSubpoints !== undefined 
+            ? empresa.totalSubpoints 
+            : empresa.puntos.reduce((sum, punto) => sum + punto.subpuntos.length, 0);
+          const subpuntosConArchivo = empresa.subpointsWithFiles !== undefined 
+            ? empresa.subpointsWithFiles 
+            : empresa.puntos.reduce(
+                (sum, punto) => sum + punto.subpuntos.filter(s => s.archivoCargado).length,
+                0
+              );
           const progresoEmpresa = totalSubpuntos > 0 ? (subpuntosConArchivo / totalSubpuntos) * 100 : 0;
 
           return (
             <Paper key={empresa.id} shadow="sm" p="md" radius="md" withBorder>
               <Accordion>
-                <Accordion.Item value={empresa.id}>
+                <Accordion.Item value={String(empresa.id)}>
                   <Accordion.Control
                     icon={<FaChevronDown size={14} />}
+                    onClick={() => handleLoadEmpresaData(empresa.empresaId || empresa.id)}
                     styles={{
                       control: {
                         fontSize: '1.1rem',
@@ -1287,17 +2771,27 @@ export function SGI() {
                       },
                     }}
                   >
+                  
                     <Stack gap="xs" style={{ flex: 1 }}>
                       <Group justify="space-between" wrap="nowrap">
-                        <Text fw={600}>{empresa.nombre}</Text>
-                        <Group gap="xs">
-                          <Badge color="teal" size="lg" variant="light">
-                            👥 {empresa.auditoresAsignados.length} {empresa.auditoresAsignados.length === 1 ? 'auditor' : 'auditores'}
-                          </Badge>
-                          <Badge color="blue" size="lg">
-                            {empresa.puntos.length} {empresa.puntos.length === 1 ? 'punto' : 'puntos'}
-                          </Badge>
-                        </Group>
+                        <Stack gap={0}>
+                          <Text fw={600}>{empresa.nombre}</Text>
+                          {empresa.subEmpresa ? (
+                            <Text size="xs" c="dimmed" fw={500}>
+                               {empresa.subEmpresa}
+                            </Text>
+                          ) : null}
+                        </Stack>
+                        {empresasConDatos.has(empresa.empresaId || empresa.id) && (
+                          <Group gap="xs">
+                            <Badge color="teal" size="lg" variant="light">
+                              👥 {empresa.auditoresAsignados.length} {empresa.auditoresAsignados.length === 1 ? 'auditor' : 'auditores'}
+                            </Badge>
+                            <Badge color="blue" size="lg">
+                              {empresa.puntos.length} {empresa.puntos.length === 1 ? 'punto' : 'puntos'}
+                            </Badge>
+                          </Group>
+                        )}
                       </Group>
                       {totalSubpuntos > 0 && (
                         <Box>
@@ -1325,41 +2819,52 @@ export function SGI() {
                   </Accordion.Control>
 
                 <Accordion.Panel>
+                  {empresasCargando.has(empresa.empresaId || empresa.id) ? (
+                    <Center py="xl">
+                      <Stack align="center" gap="md">
+                        <Loader size="lg" color="#a1a23b" />
+                        <Text size="sm" c="dimmed">Cargando información de la empresa...</Text>
+                      </Stack>
+                    </Center>
+                  ) : (
+                    <>
                   {/* AUDITORES ASIGNADOS Y BOTONES */}
                   <Paper p="md" mb="md" withBorder style={{ backgroundColor: '#f8f9fa' }}>
-                    <Group justify="space-between" align="center">
-                      <Stack gap={4}>
-                        <Text size="sm" fw={600} c="dimmed">Auditores Asignados:</Text>
-                        {empresa.auditoresAsignados.length === 0 ? (
-                          <Text size="sm" c="dimmed" fs="italic">Sin auditores asignados</Text>
-                        ) : (
-                          <Group gap="xs">
-                            {empresa.auditoresAsignados.map((auditorId) => {
-                              const auditor = auditores.find(a => a.id === auditorId);
-                              return auditor ? (
-                                <Badge key={auditor.id} size="lg" color="teal" variant="dot">
-                                  {auditor.nombre}
-                                </Badge>
-                              ) : null;
-                            })}
-                          </Group>
+                    <Stack gap="md">
+                      <Group justify="space-between" align="flex-start">
+                        <Stack gap={4} style={{ flex: 1 }}>
+                          <Text size="sm" fw={600} c="dimmed">Auditores Asignados:</Text>
+                          {empresa.auditoresAsignados.length === 0 ? (
+                            <Text size="sm" c="dimmed" fs="italic">Sin auditores asignados</Text>
+                          ) : (
+                            <Stack gap="xs">
+                              {empresa.auditoresAsignados.map((auditorId) => {
+                                const auditor = auditores.find(a => a.id === auditorId);
+                                return auditor ? (
+                                  <Badge key={auditor.id} size="lg" color="teal" variant="dot">
+                                    {auditor.nombre}
+                                  </Badge>
+                                ) : null;
+                              })}
+                            </Stack>
+                          )}
+                        </Stack>
+                        {getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR && (
+                          <Button
+                            size="sm"
+                            variant="light"
+                            color="teal"
+                            onClick={() => handleOpenAuditores(empresa.id)}
+                          >
+                            Gestionar Auditores
+                          </Button>
                         )}
-                      </Stack>
-                      {auth.userType === 'admin' && (
-                        <Button
-                          size="sm"
-                          variant="light"
-                          color="teal"
-                          onClick={() => handleOpenAuditores(empresa.id)}
-                        >
-                          Gestionar Auditores
-                        </Button>
-                      )}
-                    </Group>
+                      </Group>
+                    </Stack>
                   </Paper>
 
                   {/* BOTÓN PARA AÑADIR PUNTO */}
-                  {auth.userType !== 'empresa' && (
+                  {getRoleLabel(auth.userType) == UserRole.ADMINISTRADOR && (
                     <Group justify="flex-end" mb="md">
                       <Button
                         leftSection={<FaPlus size={14} />}
@@ -1371,169 +2876,219 @@ export function SGI() {
                     </Group>
                   )}
 
-                  {/* LISTA DE PUNTOS */}
+                  {/* LISTA DE PUNTOS - ACCORDION */}
                   
-                  { auth.userType !== 'empresa' && empresa.puntos.length === 0 ? (
+                  { getRoleLabel(auth.userType) !== UserRole.EMPRESA && empresa.puntos.length === 0 ? (
                     <Text c="dimmed" ta="center" py="xl">
                       No hay puntos registrados. Haz clic en "Añadir Punto" para crear uno.
                     </Text>
-                  ) : (
-                    <Stack gap="sm">
+                  ) : empresa.puntos.length > 0 ? (
+                    <Accordion
+                      chevronPosition="right"
+                      defaultValue={null}
+                      styles={{
+                        chevron: {
+                          fontSize: 16,
+                          marginRight: 0,
+                        }
+                      }}
+                    >
                       {empresa.puntos.map((punto) => (
-                        <Paper
+                        <Accordion.Item
                           key={punto.id}
-                          p="md"
-                          radius="md"
+                          value={punto.id}
                           style={{
                             backgroundColor: '#e8eaa6',
                             border: '1px solid #d4d68f',
+                            marginBottom: 8,
+                            borderRadius: 6,
                           }}
                         >
-                          <Group justify="space-between" mb="sm">
-                            <Text fw={600} size="lg" c="#4a4a4a">
-                              {punto.nombre}
-                            </Text>
-                            <Group gap={8}>
-                              {auth.userType !== 'empresa' && (
-                                <ActionIcon
-                                  color="blue"
-                                  variant="light"
-                                  onClick={() => handleEditPunto(empresa.id, punto)}
-                                >
-                                  <FaEdit size={16} />
-                                </ActionIcon>
-                              )}
-                              {auth.userType === 'admin' && (
-                                <ActionIcon
-                                  color="red"
-                                  variant="light"
-                                  onClick={() => handleDeletePunto(empresa.id, punto.id)}
-                                >
-                                  <FaTrash size={16} />
-                                </ActionIcon>
-                              )}
-                            </Group>
-                          </Group>
-
-                          {/* BARRA DE PROGRESO DEL PUNTO */}
-                          {punto.subpuntos.length > 0 && (
-                            <Box mb="sm">
-                              <Progress
-                                value={
-                                  (punto.subpuntos.filter((s) => s.archivoCargado).length / punto.subpuntos.length) * 100
-                                }
-                                size="lg"
-                                radius="md"
-                                color={
-                                  punto.subpuntos.filter((s) => s.archivoCargado).length === punto.subpuntos.length
-                                    ? 'green'
-                                    : punto.subpuntos.some((s) => s.archivoCargado)
-                                    ? 'yellow'
-                                    : 'gray'
-                                }
-                                styles={{
-                                  label: { fontWeight: 600, fontSize: '0.875rem' }
-                                }}
-                              />
-                              <Text size="xs" ta="center" mt={2} fw={500} c="dimmed">
-                                {punto.subpuntos.filter((s) => s.archivoCargado).length} / {punto.subpuntos.length} completados
+                          <Accordion.Control
+                            style={{
+                              padding: '12px 14px',
+                            }}
+                          >
+                            <Stack gap={4} style={{ flex: 1 }}>
+                              <Text fw={600} size="lg" c="#4a4a4a">
+                                {punto.nombre}
                               </Text>
-                            </Box>
-                          )}
+                              {punto.subpuntos.length > 0 && (
+                                <Text size="xs" c="dimmed">
+                                  {punto.subpuntos.filter((s) => s.archivoCargado).length} / {punto.subpuntos.length} completados
+                                </Text>
+                              )}
+                            </Stack>
+                          </Accordion.Control>
 
-                          <Divider my="sm" />
+                          <Accordion.Panel style={{ padding: '14px' }}>
+                            <Stack gap="md">
+                              {/* BOTONES DE ACCIÓN DEL PUNTO */}
+                              <Group justify="flex-end" gap={6} wrap="nowrap">
+                                {getRoleLabel(auth.userType) !== UserRole.EMPRESA && (
+                                  <Button
+                                    size="xs"
+                                    variant="light"
+                                    color="blue"
+                                    onClick={() => handleEditPunto(empresa.id, punto)}
+                                    leftSection={<FaEdit size={12} />}
+                                  >
+                                    Editar
+                                  </Button>
+                                )}
+                                {getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR && (
+                                  <Button
+                                    size="xs"
+                                    color="red"
+                                    variant="light"
+                                    onClick={() => handleDeletePunto(empresa.id, empresa.empresaId || empresa.id, punto.id)}
+                                    leftSection={<FaTrash size={12} />}
+                                  >
+                                    Eliminar
+                                  </Button>
+                                )}
+                              </Group>
 
-                          {/* SUBPUNTOS */}
-                          <Stack gap="xs" mt="sm">
-                            {punto.subpuntos.map((subpunto) => (
-                              <Paper
-                                key={subpunto.id}
-                                p="sm"
-                                radius="sm"
-                                style={{
-                                  backgroundColor: '#f5f7d0',
-                                  border: '1px solid #e0e3a8',
-                                  cursor: 'pointer',
-                                }}
-                                onClick={() => {
-                                  setViewingSubpunto(subpunto);
-                                  setViewingContext({ empresa: empresa.nombre, punto: punto.nombre });
-                                  setOpenedViewer(true);
-                                }}
-                              >
-                                <Group justify="space-between">
-                                  <Stack gap={4} style={{ flex: 1 }}>
-                                    <Group gap={8}>
-                                      <Text size="sm" fw={600}>{subpunto.nombre}</Text>
-                                      <Badge 
-                                        size="xs" 
-                                        color={subpunto.archivoCargado ? 'green' : 'gray'}
-                                        leftSection={subpunto.archivoCargado ? <FaCheck size={10} /> : <FaTimes size={10} />}
-                                      >
-                                        {subpunto.archivoCargado ? 'Con archivo' : 'Sin archivo'}
-                                      </Badge>
-                                    </Group>
-                                    <Text size="xs" c="dimmed">
-                                      Periodicidad: {subpunto.periodicidad}
-                                    </Text>
-                                  </Stack>
-                                  <Group gap={4} onClick={(e) => e.stopPropagation()}>
-                                    {auth.userType !== 'empresa' && (
-                                      <ActionIcon
-                                        size="sm"
-                                        color="blue"
-                                        variant="subtle"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          handleEditSubpunto(empresa.id, punto.id, subpunto);
-                                        }}
-                                      >
-                                        <FaEdit size={12} />
-                                      </ActionIcon>
-                                    )}
-                                    {auth.userType === 'admin' && (
-                                      <ActionIcon
-                                        size="sm"
-                                        color="red"
-                                        variant="subtle"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          handleDeleteSubpunto(empresa.id, punto.id, subpunto.id);
-                                        }}
-                                      >
-                                        <FaTrash size={12} />
-                                      </ActionIcon>
-                                    )}
-                                  </Group>
-                                </Group>
-                              </Paper>
-                            ))}
+                              {/* BARRA DE PROGRESO DEL PUNTO */}
+                              {punto.subpuntos.length > 0 && (
+                                <Box>
+                                  <Progress
+                                    value={
+                                      (punto.subpuntos.filter((s) => s.archivoCargado).length / punto.subpuntos.length) * 100
+                                    }
+                                    size="lg"
+                                    radius="md"
+                                    color={
+                                      punto.subpuntos.filter((s) => s.archivoCargado).length === punto.subpuntos.length
+                                        ? 'green'
+                                        : punto.subpuntos.some((s) => s.archivoCargado)
+                                        ? 'yellow'
+                                        : 'gray'
+                                    }
+                                    styles={{
+                                      label: { fontWeight: 600, fontSize: '0.875rem' }
+                                    }}
+                                  />
+                                </Box>
+                              )}
 
-                            {/* BOTÓN PARA AÑADIR SUBPUNTO */}
-                            {auth.userType !== 'empresa' && (
-                              <Button
-                                size="xs"
-                                variant="light"
-                                color="gray"
-                                leftSection={<FaPlus size={12} />}
-                                onClick={() => handleOpenNewSubpunto(empresa.id, punto.id)}
-                              >
-                                Añadir Subpunto
-                              </Button>
-                            )}
-                          </Stack>
-                        </Paper>
+                              {/* SUBPUNTOS - ACCORDION GRUPAL */}
+                              {punto.subpuntos.length > 0 ? (
+                                <Accordion 
+                                  chevronPosition="right"
+                                  defaultValue={null}
+                                >
+                                  <Accordion.Item value="subpuntos">
+                                    <Accordion.Control>
+                                      <Text fw={500} size="sm">
+                                        Subpuntos ({punto.subpuntos.length})
+                                      </Text>
+                                    </Accordion.Control>
+                                    <Accordion.Panel>
+                                      <Stack gap="xs">
+                                        {punto.subpuntos.map((subpunto) => (
+                                          <Paper
+                                            key={subpunto.id}
+                                            p="sm"
+                                            radius="md"
+                                            style={{
+                                              backgroundColor: '#f5f7d0',
+                                              border: '1px solid #e0e3a8',
+                                            }}
+                                          >
+                                            <Group justify="space-between" gap={8}>
+                                              <Stack gap={4} style={{ flex: 1 }}>
+                                                <Group gap={8}>
+                                                  <Text size="sm" fw={600}>{subpunto.nombre}</Text>
+                                                  <Badge 
+                                                    size="xs" 
+                                                    color={subpunto.archivoCargado ? 'green' : 'gray'}
+                                                    leftSection={subpunto.archivoCargado ? <FaCheck size={10} /> : <FaTimes size={10} />}
+                                                  >
+                                                    {subpunto.archivoCargado ? 'Con archivo' : 'Sin archivo'}
+                                                  </Badge>
+                                                </Group>
+                                              </Stack>
+
+                                              {/* BOTONES DE ACCIÓN */}
+                                              <Group gap={6} wrap="nowrap">
+                                                <Button
+                                                  size="xs"
+                                                  variant="light"
+                                                  color="#a1a23b"
+                                                  onClick={() => {
+                                                    openSubpointViewer(subpunto, { empresa: empresa.nombre, punto: punto.nombre, puntoId: punto.id });
+                                                  }}
+                                                  leftSection={<FaEye size={12} />}
+                                                >
+                                                  Ver
+                                                </Button>
+                                                {getRoleLabel(auth.userType) !== UserRole.EMPRESA && (
+                                                  <Button
+                                                    size="xs"
+                                                    variant="light"
+                                                    color="blue"
+                                                    onClick={() => handleEditSubpunto(empresa.id, punto.id, subpunto)}
+                                                    leftSection={<FaEdit size={12} />}
+                                                  >
+                                                    Editar
+                                                  </Button>
+                                                )}
+                                                {getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR && (
+                                                  <Button
+                                                    size="xs"
+                                                    variant="light"
+                                                    color="red"
+                                                    onClick={() => handleDeleteSubpunto(empresa.id, punto.id, subpunto.id)}
+                                                    leftSection={<FaTrash size={12} />}
+                                                  >
+                                                    Eliminar
+                                                  </Button>
+                                                )}
+                                              </Group>
+                                            </Group>
+                                          </Paper>
+                                        ))}
+                                      </Stack>
+                                    </Accordion.Panel>
+                                  </Accordion.Item>
+                                </Accordion>
+                              ) : (
+                                <Text c="dimmed" size="sm" ta="center" py="md">
+                                  No hay subpuntos. {getRoleLabel(auth.userType) !== UserRole.EMPRESA && 'Haz clic en "Añadir Subpunto" para crear uno.'}
+                                </Text>
+                              )}
+
+                              {/* BOTÓN PARA AÑADIR SUBPUNTO */}
+                              {getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR && (
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  color="gray"
+                                  leftSection={<FaPlus size={12} />}
+                                  onClick={() => handleOpenNewSubpunto(empresa.id, punto.id)}
+                                  fullWidth
+                                >
+                                  Añadir Subpunto
+                                </Button>
+                              )}
+                            </Stack>
+                          </Accordion.Panel>
+                        </Accordion.Item>
                       ))}
-                    </Stack>
+                    </Accordion>
+                  ) : null}
+                    </>
                   )}
                 </Accordion.Panel>
               </Accordion.Item>
             </Accordion>
           </Paper>
           );
-        })}
+        })
+        )}
 
-        {empresasFiltradas.length === 0 && (
+        {empresasPaginadas.length === 0 && empresas.length > 0 && (
           <Text c="dimmed" ta="center" py="xl">
             No se encontraron empresas
           </Text>
@@ -1559,7 +3114,8 @@ export function SGI() {
             </Stack>
           </Group>
         )}
-      </Stack>
+        </Stack>
+      )}
 
       {/* 📝 MODAL PARA PUNTO */}
       <Modal
@@ -1609,38 +3165,122 @@ export function SGI() {
           setEditingSubpunto(null);
         }}
         title={editingSubpunto ? 'Editar Subpunto' : 'Nuevo Subpunto'}
-        size="md"
+        size="lg"
+        centered
       >
         <form onSubmit={formSubpunto.onSubmit(handleSubmitSubpunto)}>
-          <Stack gap="md">
+          <Stack gap="lg">
             <TextInput
               label="Nombre del Subpunto"
-              placeholder="Ej: Subpunto 4.1"
+              placeholder="Ej: Capacitación, Permisos, etc."
               required
+              size="md"
               {...formSubpunto.getInputProps('nombre')}
             />
 
-            <Select
-              label="Periodicidad"
-              placeholder="Seleccione periodicidad"
-              required
-              data={[
-             
-                { value: 'Semanal', label: 'Semanal' },
-                { value: 'Mensual', label: 'Mensual' },
-                { value: 'Anual', label: 'Anual' },
-              ]}
-              {...formSubpunto.getInputProps('periodicidad')}
+            <Checkbox
+              label="Una sola vez (Sin periodos de auditoría)"
+              description="Marque esta opción si el subpunto solo debe ejecutarse una vez"
+              {...formSubpunto.getInputProps('isOnetime', { type: 'checkbox' })}
             />
 
-            <Switch
-              label="¿Empresa sube archivos?"
-              {...formSubpunto.getInputProps('estado', { type: 'checkbox' })}
-            />
+            {!formSubpunto.values.isOnetime && (
+              <>
+                <Select
+                  label="Periodicidad"
+                  placeholder="Seleccione periodicidad"
+                  required
+                  size="md"
+                  data={[
+                    { value: 'Mensual', label: 'Mensual' },
+                    { value: 'Anual', label: 'Anual' },
+                  ]}
+                  {...formSubpunto.getInputProps('periodicidad')}
+                />
 
-            <Group justify="flex-end" mt="md">
+                {/* SECCIÓN DE PERIODO DE AUDITORÍA */}
+                <Paper p="md" withBorder radius="md" style={{ backgroundColor: '#f8f9fa' }}>
+                  <Stack gap="md">
+                    <Text fw={600} size="sm" c="dimmed">📅 Periodo de Auditoría</Text>
+                    
+                    {formSubpunto.values.periodicidad === 'Mensual' ? (
+                  <>
+                    <Group grow>
+                      <MonthPickerInput
+                        label="Mes de inicio"
+                        placeholder="Seleccione mes de inicio"
+                        required
+                        size="md"
+                        valueFormat="MMMM YYYY"
+                        locale="es"
+                        minDate={new Date()}
+                        maxDate={new Date(new Date().getFullYear() + 2, 11, 31)}
+                        {...formSubpunto.getInputProps('periodoInicio')}
+                      />
+                      
+                      <MonthPickerInput
+                        label="Mes de fin"
+                        placeholder="Seleccione mes de fin"
+                        required
+                        size="md"
+                        valueFormat="MMMM YYYY"
+                        locale="es"
+                        minDate={formSubpunto.values.periodoInicio instanceof Date ? formSubpunto.values.periodoInicio : new Date()}
+                        maxDate={new Date(new Date().getFullYear() + 2, 11, 31)}
+                        {...formSubpunto.getInputProps('periodoFin')}
+                      />
+                    </Group>
+
+                    {formSubpunto.values.periodoInicio instanceof Date && formSubpunto.values.periodoFin instanceof Date && (
+                      <Paper p="sm" withBorder radius="sm" style={{ backgroundColor: '#e7f5ff' }}>
+                        <Group gap="xs">
+                          <Badge color="blue" variant="light" size="lg">
+                            📆 {formSubpunto.values.periodoInicio.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' })}
+                          </Badge>
+                          <Text size="sm" c="dimmed">hasta</Text>
+                          <Badge color="blue" variant="light" size="lg">
+                            📆 {formSubpunto.values.periodoFin.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' })}
+                          </Badge>
+                        </Group>
+                      </Paper>
+                    )}
+                  </>
+                    ) : (
+                      <>
+                        <Select
+                          label="Duración del periodo"
+                          placeholder="Seleccione duración"
+                          required
+                          size="md"
+                          data={[
+                            { value: '1', label: `1 año (${new Date().getFullYear()})` },
+                            { value: '2', label: `2 años (${new Date().getFullYear()} - ${new Date().getFullYear() + 1})` },
+                          ]}
+                          {...formSubpunto.getInputProps('duracionAnios')}
+                        />
+
+                        <Paper p="sm" withBorder radius="sm" style={{ backgroundColor: '#e7f5ff' }}>
+                          <Group gap="xs">
+                            <Badge color="green" variant="light" size="lg">
+                              📆 Enero {new Date().getFullYear()}
+                            </Badge>
+                            <Text size="sm" c="dimmed">hasta</Text>
+                            <Badge color="green" variant="light" size="lg">
+                              📆 Diciembre {new Date().getFullYear() + parseInt(formSubpunto.values.duracionAnios || '1') - 1}
+                            </Badge>
+                          </Group>
+                        </Paper>
+                      </>
+                    )}
+                  </Stack>
+                </Paper>
+              </>
+            )}
+
+            <Group justify="flex-end" mt="lg">
               <Button
                 variant="default"
+                size="md"
                 onClick={() => {
                   setOpenedSubpunto(false);
                   formSubpunto.reset();
@@ -1649,7 +3289,7 @@ export function SGI() {
               >
                 Cancelar
               </Button>
-              <Button type="submit" color="#a1a23b">
+              <Button type="submit" color="#a1a23b" size="md">
                 {editingSubpunto ? 'Actualizar' : 'Crear'}
               </Button>
             </Group>
@@ -1689,6 +3329,80 @@ export function SGI() {
         </Stack>
       </Modal>
 
+      {/* 🔔 MODAL DE NOTIFICACIONES DE CHAT */}
+      <Modal
+        opened={openedNotificationsModal}
+        onClose={() => setOpenedNotificationsModal(false)}
+        title="Notificaciones de chat"
+        size="lg"
+        centered
+      >
+        <Stack gap="md">
+
+          {loadingChatNotifications ? (
+            <Center py="lg">
+              <Stack gap="xs" align="center">
+                <Loader size="sm" color="#a1a23b" />
+                <Text size="sm" c="dimmed">Cargando notificaciones...</Text>
+              </Stack>
+            </Center>
+          ) : unreadNotificationsCount === 0 ? (
+            <Paper p="lg" radius="md" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+              <Text size="sm" c="dimmed" ta="center">
+                No hay notificaciones de mensajes por mostrar.
+              </Text>
+            </Paper>
+          ) : (
+            <Stack gap="sm" style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 4 }}>
+              {groupedUnreadNotifications.map((groupedNotification) => {
+                const { notification, count, notificationIds } = groupedNotification;
+
+                return (
+                <Paper key={notification.notificationId} p="md" withBorder radius="md" style={{ backgroundColor: 'white' }}>
+                  <Stack gap="sm">
+                    <Group justify="space-between" align="flex-start" wrap="nowrap">
+                      <Stack gap={4} style={{ flex: 1 }}>
+                        <Group gap="xs">
+                          <Text fw={600}>{notification.title || 'Nuevo mensaje en chat'}</Text>
+                          <Badge color="red" variant="light" size="sm">
+                            {count > 1 ? `${count} nuevas` : 'Nueva'}
+                          </Badge>
+                        </Group>
+                        <Text size="sm" c="dimmed">
+                          {notification.body}
+                        </Text>
+                      </Stack>
+                      <Button
+                        size="xs"
+                        color="#a1a23b"
+                        variant="light"
+                        onClick={() => void handleOpenNotificationChat(notification, notificationIds)}
+                        loading={openingNotificationId === notification.notificationId}
+                      >
+                        Ir al chat
+                      </Button>
+                    </Group>
+
+                    <Group gap="xs">
+                      <Badge size="sm" variant="outline" color="blue">
+                        Punto {notification.pointId ?? 'N/A'}
+                      </Badge>
+                      <Badge size="sm" variant="outline" color="teal">
+                        Subpunto {notification.templateSubpointId ?? 'N/A'}
+                      </Badge>
+                      <Text size="xs" c="dimmed">
+                        {formatNotificationDate(notification.createdAt)}
+                      </Text>
+                    </Group>
+                  </Stack>
+                </Paper>
+                );
+              })}
+            </Stack>
+          )}
+        </Stack>
+      </Modal>
+
       {/* 👁️ MODAL VISOR DE SUBPUNTO */}
       <Modal
         opened={openedViewer}
@@ -1721,59 +3435,7 @@ export function SGI() {
             {/* INFORMACIÓN DEL SUBPUNTO */}
             <Paper p="md" withBorder>
               <Stack gap="sm">
-                {/* Periodicidad con opción de editar */}
-                <Group justify="space-between" align="center">
-                  <Group gap="xs">
-                    <Text size="sm" fw={600}>Periodicidad:</Text>
-                    {editingPeriodicidad ? (
-                      <Group gap="xs">
-                        <Select
-                          size="xs"
-                          value={tempPeriodicidad}
-                          onChange={(value) => setTempPeriodicidad(value || '')}
-                          data={[
-                            { value: 'Semanal', label: 'Semanal' },
-                            { value: 'Mensual', label: 'Mensual' },
-                            { value: 'Anual', label: 'Anual' },
-                          ]}
-                          style={{ width: 150 }}
-                        />
-                        <ActionIcon
-                          size="sm"
-                          color="green"
-                          variant="light"
-                          onClick={handleUpdatePeriodicidad}
-                        >
-                          <FaCheck size={12} />
-                        </ActionIcon>
-                        <ActionIcon
-                          size="sm"
-                          color="red"
-                          variant="light"
-                          onClick={() => setEditingPeriodicidad(false)}
-                        >
-                          <FaTimes size={12} />
-                        </ActionIcon>
-                      </Group>
-                    ) : (
-                      <Group gap="xs">
-                        <Text size="sm">{viewingSubpunto.periodicidad}</Text>
-                        {auth.userType !== 'empresa' && (
-                          <ActionIcon
-                            size="xs"
-                            color="blue"
-                            variant="subtle"
-                            onClick={() => {
-                              setTempPeriodicidad(viewingSubpunto.periodicidad);
-                              setEditingPeriodicidad(true);
-                            }}
-                          >
-                            <FaEdit size={10} />
-                          </ActionIcon>
-                        )}
-                      </Group>
-                    )}
-                  </Group>
+                <Group justify="flex-end" align="center">
                   <Badge 
                     size="lg" 
                     color={viewingSubpunto.archivoCargado ? 'green' : 'gray'}
@@ -1794,9 +3456,9 @@ export function SGI() {
                     <Title order={4}>Visor de Archivos</Title>
                   </Group>
                   {/* Botón de subir/actualizar archivo */}
-                  {(auth.userType === 'admin' || 
-                    auth.userType === 'auditor' || 
-                    (auth.userType === 'empresa' && !viewingSubpunto.archivoCargado)) && (
+                  {(getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR || 
+                    getRoleLabel(auth.userType) === UserRole.AUDITOR || 
+                    (getRoleLabel(auth.userType) === UserRole.EMPRESA && !viewingSubpunto.archivoCargado)) && (
                     <FileInput
                       placeholder={viewingSubpunto.archivoCargado ? "Actualizar archivo" : "Subir archivo"}
                       accept="application/pdf,image/*,.doc,.docx,.xls,.xlsx"
@@ -1825,8 +3487,10 @@ export function SGI() {
                           variant="light" 
                           color="gray"
                           component="a"
-                          href={`/${viewingSubpunto.archivoUpload || 'sample.pdf'}`}
+                          href={getSubpointFileUrl(viewingSubpunto)}
                           download
+                          target="_blank"
+                          rel="noopener noreferrer"
                         >
                           Descargar
                         </Button>
@@ -1835,41 +3499,11 @@ export function SGI() {
 
                     {/* Controles según tipo de archivo */}
                     {(() => {
-                      const fileType = getFileType(viewingSubpunto.archivoUpload || 'documento.pdf');
+                      const fileType = getFileType(viewingSubpunto.archivoUpload || viewingSubpunto.archivoDownloadUrl || 'documento.pdf');
                       
                       // El iframe de PDF tiene sus propios controles nativos
                       if (fileType === 'pdf') {
                         return null;
-                      }
-                      
-                      if (fileType === 'image') {
-                        return (
-                          <Group justify="center" gap="md" wrap="wrap">
-                            <Group gap="xs">
-                              <ActionIcon
-                                size="lg"
-                                variant="light"
-                                color="blue"
-                                onClick={() => setScale(prev => Math.max(0.5, prev - 0.2))}
-                                disabled={scale <= 0.5}
-                              >
-                                <FaSearchMinus size={16} />
-                              </ActionIcon>
-                              <Text size="sm" fw={500}>
-                                {Math.round(scale * 100)}%
-                              </Text>
-                              <ActionIcon
-                                size="lg"
-                                variant="light"
-                                color="blue"
-                                onClick={() => setScale(prev => Math.min(2.0, prev + 0.2))}
-                                disabled={scale >= 2.0}
-                              >
-                                <FaSearchPlus size={16} />
-                              </ActionIcon>
-                            </Group>
-                          </Group>
-                        );
                       }
                       
                       return null;
@@ -1890,10 +3524,10 @@ export function SGI() {
                       }}
                     >
                       {(() => {
-                        const fileType = getFileType(viewingSubpunto.archivoUpload || 'documento.pdf');
+                        const fileType = getFileType(viewingSubpunto.archivoUpload || viewingSubpunto.archivoDownloadUrl || 'documento.pdf');
                         // Para PDF e imágenes, usar blob si existe. Para Word/Excel, usar solo ruta directa
                         const storedFileUrl = sessionStorage.getItem(`file_${viewingSubpunto.id}`);
-                        let fileUrl = `/${viewingSubpunto.archivoUpload || 'sample.pdf'}`;
+                        let fileUrl = getSubpointFileUrl(viewingSubpunto);
                         
                         // Solo usar blob URL para PDF e imágenes (iframe puede manejarlos)
                         if ((fileType === 'pdf' || fileType === 'image') && storedFileUrl) {
@@ -1916,142 +3550,27 @@ export function SGI() {
                             );
 
                           case 'image':
-                            return (
-                              <Box style={{ 
-                                width: '100%',
-                                height: '100%',
-                                display: 'flex',
-                                justifyContent: 'center',
-                                alignItems: 'center',
-                                overflow: 'auto'
-                              }}>
-                                <img 
-                                  src={fileUrl} 
-                                  alt="Archivo cargado"
-                                  style={{ 
-                                    maxWidth: `${scale * 100}%`,
-                                    maxHeight: '65vh',
-                                    objectFit: 'contain',
-                                    transition: 'all 0.3s ease'
-                                  }}
-                                />
-                              </Box>
-                            );
-
                           case 'excel':
-                            // Para Excel, mostrar interfaz de carga
-                            return (
-                                <Stack gap="md">
-                                  {/* Selector de hojas */}
-                                  {excelSheets.length > 1 && (
-                                    <Group gap="xs">
-                                      <Text size="sm" fw={600}>Hoja:</Text>
-                                      {excelSheets.map((sheet) => (
-                                        <Button
-                                          key={sheet}
-                                          size="xs"
-                                          variant={selectedSheet === sheet ? 'filled' : 'light'}
-                                          color="#a1a23b"
-                                          onClick={() => changeExcelSheet(sheet, fileUrl)}
-                                        >
-                                          {sheet}
-                                        </Button>
-                                      ))}
-                                    </Group>
-                                  )}
-
-                                  {loadingExcel ? (
-                                    <Stack align="center" gap="md" p="xl">
-                                      <Text>📊 Cargando Excel...</Text>
-                                    </Stack>
-                                  ) : excelData.length > 0 ? (
-                                    <Box style={{ overflowX: 'auto', maxHeight: '600px', overflowY: 'auto' }}>
-                                      <table style={{
-                                        width: '100%',
-                                        borderCollapse: 'collapse',
-                                        fontSize: '0.875rem',
-                                        backgroundColor: 'white'
-                                      }}>
-                                        <tbody>
-                                          {excelData.map((row, rowIndex) => (
-                                            <tr key={rowIndex}>
-                                              {row.map((cell, cellIndex) => (
-                                                <td
-                                                  key={cellIndex}
-                                                  style={{
-                                                    border: '1px solid #dee2e6',
-                                                    padding: '8px',
-                                                    backgroundColor: rowIndex === 0 ? '#f1f3f5' : 'white',
-                                                    fontWeight: rowIndex === 0 ? 600 : 400,
-                                                    minWidth: '100px'
-                                                  }}
-                                                >
-                                                  {cell !== null && cell !== undefined ? String(cell) : ''}
-                                                </td>
-                                              ))}
-                                            </tr>
-                                          ))}
-                                        </tbody>
-                                      </table>
-                                    </Box>
-                                  ) : (
-                                    <Stack align="center" gap="md" p="xl">
-                                      <Text style={{ fontSize: '60px' }}>📊</Text>
-                                      <Text size="lg" fw={600} c="#a1a23b">Documento Excel</Text>
-                                      <Text size="sm" c="dimmed">Haz clic para cargar y visualizar el archivo</Text>
-                                      <Button
-                                        size="md"
-                                        leftSection={<FaFileUpload size={16} />}
-                                        color="#a1a23b"
-                                        onClick={() => loadExcelFile(fileUrl)}
-                                      >
-                                        Cargar Excel
-                                      </Button>
-                                    </Stack>
-                                  )}
-                                </Stack>
-                              );
-
                           case 'doc':
-                            // Para Word, mostrar interfaz de carga con docx-preview
-                            const wordContainerId = `word-container-${viewingSubpunto.id}`;
-                            
-                            return (
-                                <Stack gap="md">
-                                  {loadingWord && (
-                                    <Stack align="center" gap="md" p="xl">
-                                      <Text>📄 Cargando documento Word...</Text>
-                                    </Stack>
-                                  )}
-                                  
-                                  <Paper
-                                    p="md"
-                                    withBorder
-                                    style={{
-                                      backgroundColor: 'white',
-                                      maxHeight: '600px',
-                                      overflowY: 'auto',
-                                      minHeight: wordLoaded || loadingWord ? '400px' : '100px'
-                                    }}
-                                  >
-                                    <div
-                                      id={wordContainerId}
-                                      style={{
-                                        minHeight: '400px'
-                                      }}
-                                    />
-                                  </Paper>
-                                </Stack>
-                              );
-
                           default:
                             return (
                               <Stack align="center" gap="md" p="xl">
-                                <FaFileUpload size={40} color="#868e96" />
-                                <Text c="dimmed" fw={500}>Tipo de archivo no soportado</Text>
+                                <FaFileUpload size={40} color="#4c6ef5" />
+                                <Text fw={700} c="#4c6ef5">Previsualización no disponible</Text>
                                 <Text size="sm" c="dimmed" ta="center">
-                                  Este tipo de archivo no se puede previsualizar. Descárgalo para verlo.
+                                  Este archivo no es PDF. Descárgalo para visualizarlo.
                                 </Text>
+                                <Button
+                                  component="a"
+                                  href={fileUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  color="#a1a23b"
+                                  variant="light"
+                                  download
+                                >
+                                  Descargar archivo
+                                </Button>
                               </Stack>
                             );
                         }
@@ -2065,7 +3584,7 @@ export function SGI() {
                       <Text c="dimmed" ta="center">
                         No hay archivos cargados aún
                       </Text>
-                      {auth.userType === 'empresa' && (
+                      {getRoleLabel(auth.userType) === UserRole.EMPRESA && (
                         <Text size="xs" c="dimmed" ta="center">
                           Puedes subir un archivo usando el botón de arriba
                         </Text>
@@ -2076,6 +3595,81 @@ export function SGI() {
               </Stack>
             </Paper>
 
+            {/* SECCIÓN: ARCHIVO EXTRA */}
+            {(getRoleLabel(auth.userType) === UserRole.EMPRESA || 
+              getRoleLabel(auth.userType) === UserRole.AUDITOR || 
+              getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR) && (
+              <Paper p="lg" withBorder radius="md" style={{ backgroundColor: '#f8f9fa' }}>
+                <Stack gap="md">
+                  <Group justify="space-between" align="center">
+                    <Group gap="xs">
+                      <Text size="lg" fw={600} c="#4c6ef5">📎 Archivo Extra</Text>
+                    </Group>
+                  </Group>
+                  
+                  <Text size="sm" c="dimmed">
+                    {getRoleLabel(auth.userType) === UserRole.EMPRESA 
+                      ? 'Carga un archivo adicional desde una URL'
+                      : 'Ver archivos extra cargados por la empresa'}
+                  </Text>
+
+                  {getRoleLabel(auth.userType) === UserRole.EMPRESA && (
+                    <Stack gap="sm">
+                      <Group gap="sm">
+                        <TextInput
+                          placeholder={
+                            viewingSubpunto?.extraContentUrl 
+                              ? `URL: ${viewingSubpunto.extraContentUrl.length > 50 
+                                  ? viewingSubpunto.extraContentUrl.substring(0, 50) + '...' 
+                                  : viewingSubpunto.extraContentUrl}`
+                              : "Ingresa la URL del archivo (Drive, Dropbox, etc.)"
+                          }
+                          value={extraFileUrl}
+                          onChange={(e) => setExtraFileUrl(e.currentTarget.value)}
+                          style={{ flex: 1 }}
+                          disabled={uploadingExtraFile}
+                        />
+                        <Button
+                          onClick={handleUploadExtraFile}
+                          loading={uploadingExtraFile}
+                          color="#4c6ef5"
+                          leftSection={<FaFileUpload size={16} />}
+                        >
+                          Subir
+                        </Button>
+                      </Group>
+                      
+                      {viewingSubpunto?.extraContentUrl && (
+                        <Group gap="xs" align="center" style={{ backgroundColor: '#f0f9ff', padding: '8px 12px', borderRadius: '6px' }}>
+                          <Text size="sm" c="green" fw={500}>✓ URL actual:</Text>
+                          <Anchor 
+                            href={viewingSubpunto.extraContentUrl} 
+                            target="_blank" 
+                            rel="noreferrer" 
+                            size="sm" 
+                            lineClamp={1} 
+                            style={{ maxWidth: 400, color: '#228be6' }}
+                          >
+                            {viewingSubpunto.extraContentUrl}
+                          </Anchor>
+                        </Group>
+                      )}
+                    </Stack>
+                  )}
+
+                  {getRoleLabel(auth.userType) !== UserRole.EMPRESA && (
+                    <Paper p="md" style={{ backgroundColor: '#ffffff', minHeight: 80 }} radius="sm">
+                      <Stack gap="xs" align="center">
+                        <Text c="dimmed" ta="center" size="sm">
+                          Los archivos extra se mostrarán aquí cuando la empresa los cargue
+                        </Text>
+                      </Stack>
+                    </Paper>
+                  )}
+                </Stack>
+              </Paper>
+            )}
+
             {/* SECCIÓN: PARRILLA DE CAMBIOS */}
             <Paper p="xs" withBorder radius="md">
               <Stack gap="xs">
@@ -2085,18 +3679,7 @@ export function SGI() {
                     <Title order={5}>Parrilla de Cambios</Title>
                   </Group>
                   <Group gap="xs">
-                    {auth.userType !== 'empresa' && (
-                      <Button
-                        size="sm"
-                        variant="light"
-                        color="#a1a23b"
-                        leftSection={<FaPlus size={14} />}
-                        onClick={() => setOpenedCambio(true)}
-                      >
-                        Agregar Cambio
-                      </Button>
-                    )}
-                    {(auth.userType === 'admin' || auth.userType === 'auditor') && viewingSubpunto.cambios.length > 0 && (
+                    {(getRoleLabel(auth.userType) === UserRole.ADMINISTRADOR || getRoleLabel(auth.userType) === UserRole.AUDITOR) && viewingSubpunto.cambios.length > 0 && (
                       <Button
                         size="sm"
                         variant="light"
@@ -2118,7 +3701,6 @@ export function SGI() {
                       </Text>
                       {auth.userType !== 'empresa' && (
                         <Text size="xs" c="dimmed" ta="center">
-                          Usa el botón "Agregar Cambio" para registrar modificaciones
                         </Text>
                       )}
                     </Stack>
@@ -2150,15 +3732,6 @@ export function SGI() {
                               width: '120px'
                             }}>
                               Fecha
-                            </th>
-                            <th style={{ 
-                              padding: '12px', 
-                              textAlign: 'left', 
-                              borderBottom: '2px solid #dee2e6',
-                              fontWeight: 600,
-                              width: '150px'
-                            }}>
-                              Usuario
                             </th>
                             <th style={{ 
                               padding: '12px', 
@@ -2197,13 +3770,6 @@ export function SGI() {
                               <td style={{ 
                                 padding: '12px', 
                                 borderBottom: '1px solid #dee2e6',
-                                color: '#495057'
-                              }}>
-                                {cambio.usuarioNombre}
-                              </td>
-                              <td style={{ 
-                                padding: '12px', 
-                                borderBottom: '1px solid #dee2e6',
                                 color: '#212529'
                               }}>
                                 {cambio.descripcion}
@@ -2219,7 +3785,7 @@ export function SGI() {
             </Paper>
 
             {/* SECCIÓN: CHAT */}
-            <Paper p="xs" withBorder radius="md">
+            <Paper p="xs" withBorder radius="md" ref={chatSectionRef}>
               <Stack gap="xs">
                 <Group gap="xs">
                   <Text></Text>
@@ -2250,8 +3816,8 @@ export function SGI() {
                   ) : (
                     <Stack gap="sm">
                       {viewingSubpunto.mensajes.map((mensaje) => {
-                        const isEmpresa = mensaje.tipo === 'empresa';
-                        const isAuditor = mensaje.tipo === 'auditor' || mensaje.tipo === 'admin';
+                        const isEmpresa = mensaje.tipo === UserRole.EMPRESA;
+                        const isAdmin = mensaje.tipo === UserRole.ADMINISTRADOR;
                         
                         return (
                           <Group 
@@ -2266,7 +3832,7 @@ export function SGI() {
                                 width: 36,
                                 height: 36,
                                 borderRadius: '50%',
-                                backgroundColor: isEmpresa ? '#4dabf7' : '#51cf66',
+                                backgroundColor: isEmpresa ? '#4dabf7' : isAdmin ? '#ffd43b' : '#51cf66',
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'center',
@@ -2274,21 +3840,21 @@ export function SGI() {
                                 fontSize: '18px'
                               }}
                             >
-                              {isEmpresa ? '🏢' : '👤'}
+                              {isEmpresa ? '🏢' : isAdmin ? '🛡️' : '👤'}
                             </Box>
                             
                             {/* Contenido del mensaje */}
                             <Stack gap={4} style={{ flex: 1 }}>
                               <Group gap="xs" wrap="nowrap">
-                                <Text size="sm" fw={600} c={isEmpresa ? '#1971c2' : '#2f9e44'}>
+                                <Text size="sm" fw={600} c={isEmpresa ? '#1971c2' : isAdmin ? '#e67700' : '#2f9e44'}>
                                   {mensaje.usuario}
                                 </Text>
                                 <Badge 
                                   size="xs" 
-                                  color={isEmpresa ? 'blue' : 'green'}
+                                  color={isEmpresa ? 'blue' : isAdmin ? 'yellow' : 'green'}
                                   variant="light"
                                 >
-                                  {isEmpresa ? 'Empresa' : mensaje.tipo === 'admin' ? 'Admin' : 'Auditor'}
+                                  {isEmpresa ? 'Empresa' : mensaje.tipo === UserRole.ADMINISTRADOR ? 'Admin' : 'Auditor'}
                                 </Badge>
                                 <Text size="xs" c="dimmed">
                                   {mensaje.fecha} {mensaje.hora}
@@ -2299,7 +3865,7 @@ export function SGI() {
                                 radius="sm"
                                 style={{ 
                                   backgroundColor: 'white',
-                                  border: `1px solid ${isEmpresa ? '#a5d8ff' : '#b2f2bb'}`
+                                  border: `1px solid ${isEmpresa ? '#a5d8ff' : isAdmin ? '#ffe066' : '#b2f2bb'}`
                                 }}
                               >
                                 <Text size="sm">
@@ -2315,7 +3881,7 @@ export function SGI() {
                 </Paper>
 
                 {/* Input para nuevo mensaje - Solo para auditor y empresa */}
-                {auth.userType !== 'admin' ? (
+                {canPostMessages ? (
                   <Group gap="xs" align="flex-end" wrap="nowrap">
                     <TextInput
                       placeholder="Escribe un mensaje..."
@@ -2370,7 +3936,11 @@ export function SGI() {
             size="sm"
           />
 
-          {auditores.length === 0 ? (
+          {loadingAuditores ? (
+            <Text c="dimmed" ta="center" py="xl">
+              Cargando auditores...
+            </Text>
+          ) : auditores.length === 0 ? (
             <Text c="dimmed" ta="center" py="xl">
               No hay auditores registrados en el sistema
             </Text>
@@ -2447,46 +4017,68 @@ export function SGI() {
         </Stack>
       </Modal>
 
-      {/* 📝 MODAL PARA AGREGAR CAMBIO */}
+      {/* 💬 MODAL PARA COMENTARIO DE ACTUALIZACIÓN */}
       <Modal
-        opened={openedCambio}
+        opened={openedCommentModal}
         onClose={() => {
-          setOpenedCambio(false);
-          setNuevoCambio('');
+          setOpenedCommentModal(false);
+          setCommentForUpdate('');
+          setPendingFileForUpdate(null);
         }}
-        title="Agregar Cambio"
+        title="Actualización de Archivo"
         size="md"
+        centered
       >
         <Stack gap="md">
+          <Paper p="sm" withBorder style={{ backgroundColor: '#fff9db', borderColor: '#ffd43b' }}>
+            <Text size="sm" fw={500}>
+              ⚠️ Este subpunto ya tiene un archivo cargado
+            </Text>
+          </Paper>
+
           <Text size="sm" c="dimmed">
-            Registra un nuevo cambio para este subpunto. Se asignará automáticamente la versión {viewingSubpunto?.cambios.length || 0}.
+            Por favor proporciona un comentario que describa esta actualización. Este comentario se registrará en el historial de cambios.
           </Text>
 
           <Textarea
-            label="Descripción del Cambio"
-            placeholder="Describe el cambio realizado..."
-            value={nuevoCambio}
-            onChange={(e) => setNuevoCambio(e.currentTarget.value)}
+            label="Comentario de actualización"
+            placeholder='Ejemplo: "fecha actualizada", "correcciones aplicadas", "nueva versión"...'
+            value={commentForUpdate}
+            onChange={(e) => setCommentForUpdate(e.currentTarget.value)}
             required
             minRows={3}
+            autoFocus
           />
+
+          {pendingFileForUpdate && (
+            <Paper p="xs" withBorder style={{ backgroundColor: '#f8f9fa' }}>
+              <Group gap="xs">
+                <FaFileUpload size={14} color="#a1a23b" />
+                <Text size="xs" c="dimmed">
+                  Archivo: <strong>{pendingFileForUpdate.name}</strong>
+                </Text>
+              </Group>
+            </Paper>
+          )}
 
           <Group justify="flex-end" mt="md">
             <Button
               variant="default"
               onClick={() => {
-                setOpenedCambio(false);
-                setNuevoCambio('');
+                setOpenedCommentModal(false);
+                setCommentForUpdate('');
+                setPendingFileForUpdate(null);
               }}
             >
               Cancelar
             </Button>
             <Button 
               color="#a1a23b"
-              onClick={handleAgregarCambio}
-              disabled={!nuevoCambio.trim()}
+              onClick={handleConfirmFileUpdate}
+              disabled={!commentForUpdate.trim() || uploadingFile}
+              loading={uploadingFile}
             >
-              Registrar Cambio
+              Actualizar Archivo
             </Button>
           </Group>
         </Stack>

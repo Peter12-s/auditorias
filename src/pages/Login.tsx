@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../AuthContext';
+import logoDoGroup from '../assets/logoG.png';
 import {
   TextInput,
   PasswordInput,
@@ -22,10 +23,12 @@ type UserType = 'admin' | 'empresa' | 'auditor';
 
 interface LoginResponse {
   access_token: string;
+  refresh_token?: string;
+  role?: UserType;
+  nombre?: string;
   user_type?: UserType;
-  user_id?: string;
-  _id?: string;
-  id?: string;
+  userId?: string | number;
+
   full_name?: any;
   fullName?: any;
   user_fullname?: string;
@@ -44,7 +47,7 @@ interface LoginResponse {
 }
 
 interface FormValues {
-  username: string;
+  email: string;
   password: string;
 }
 
@@ -75,7 +78,7 @@ export function Login() {
   const navigate = useNavigate();
   const auth = useAuth();
   const [loading, setLoading] = useState(false);
-  const [useMockAuth, setUseMockAuth] = useState(true); // 🔄 Cambiar a false para usar API real
+  const [useMockAuth] = useState(false); // 🔄 Usar API real
 
   // Redirigir si ya está autenticado
   useEffect(() => {
@@ -88,11 +91,11 @@ export function Login() {
   const form = useForm<FormValues>({
     mode: 'uncontrolled',
     initialValues: {
-      username: '',
+      email: '',
       password: '',
     },
     validate: {
-      username: (value) => (!value ? 'El email es requerido' : null),
+      email: (value) => (!value ? 'El email es requerido' : null),
       password: (value) => (!value ? 'La contraseña es requerida' : null),
     },
   });
@@ -174,7 +177,7 @@ export function Login() {
     // Simular delay de red
     await new Promise(resolve => setTimeout(resolve, 800));
 
-    const mockUser = MOCK_USERS[values.username as keyof typeof MOCK_USERS];
+    const mockUser = MOCK_USERS[values.email as keyof typeof MOCK_USERS];
 
     if (!mockUser) {
       showNotification({
@@ -203,19 +206,41 @@ export function Login() {
     
     saveUserData(mockUser.userId, mockUser.displayName, (mockUser as any).photoUrl);
 
-    auth.login(mockToken, () => {
-      showWelcomeNotification(mockUser.displayName, mockUser.userType);
-      navigate('/', { replace: true });
-    }, mockUser.userType, mockUser.userId);
+    auth.login(
+      mockToken, 
+      () => {
+        showWelcomeNotification(mockUser.displayName, mockUser.userType);
+        navigate('/', { replace: true });
+      }, 
+      mockUser.userType, 
+      mockUser.userId,
+      undefined, // refresh_token
+      mockUser.displayName, // fullName
+      (mockUser as any).photoUrl // photoUrl
+    );
   };
 
   // Manejar errores de login real
   const handleLoginError = (err: any) => {
     const errorData = err?.data || {};
-    const errorMessage = errorData?.message || err?.message || '';
+    let errorMessage = errorData?.message || err?.message || '';
     const statusCode = err?.status || err?.statusCode || 0;
 
+    // Mostrar el mensaje exacto del servidor si contiene información útil
     if (
+      errorMessage.toLowerCase().includes('bloqueada') ||
+      errorMessage.toLowerCase().includes('locked') ||
+      errorMessage.toLowerCase().includes('intenta') ||
+      errorMessage.toLowerCase().includes('try again')
+    ) {
+      // Mostrar el mensaje del servidor tal cual
+      showNotification({
+        title: 'Acceso restringido',
+        message: errorMessage,
+        color: 'orange',
+        autoClose: 5000,
+      });
+    } else if (
       statusCode === 401 ||
       errorMessage.toLowerCase().includes('password') ||
       errorMessage.toLowerCase().includes('contraseña') ||
@@ -243,24 +268,46 @@ export function Login() {
 
     try {
       const login: LoginResponse = await BasicPetition({
-        endpoint: '/certificate-auth/login',
+        endpoint: '/auth/login',
         method: 'POST',
         data: values,
         showNotifications: false,
       });
 
       if (login.access_token) {
-        const displayName = extractDisplayName(login);
-        const userType = login.user_type;
-        const userId = login.user_id ?? login._id ?? login.id ?? '';
-        const photoUrl = login.fotoPerfil ?? login.photo ?? login.profile_photo ?? login.user?.fotoPerfil ?? login.user?.photo;
+        // Extraer datos de la respuesta
+        const displayName = login.fullName || login.nombre || extractDisplayName(login);
+        const userType = login.role || login.user_type;
+        const userId = String(login.userId ?? '');
+        
+        // Extraer photoUrl de múltiples posibles ubicaciones en la respuesta
+        const photoUrl = 
+          (login as any).photoUrl ?? 
+          (login as any).photo_url ?? 
+          login.fotoPerfil ?? 
+          login.photo ?? 
+          login.profile_photo ?? 
+          login.user?.fotoPerfil ?? 
+          login.user?.photo ?? 
+          (login.user as any)?.photoUrl ??
+          (login.user as any)?.photo_url;
+
 
         saveUserData(userId, displayName, photoUrl);
 
-        auth.login(login.access_token, () => {
-          showWelcomeNotification(displayName, userType);
-          navigate('/', { replace: true });
-        }, userType, userId);
+        // Login con todos los datos separados
+        auth.login(
+          login.access_token,
+          () => {
+            showWelcomeNotification(displayName, userType);
+            navigate('/', { replace: true });
+          },
+          userType,
+          userId,
+          login.refresh_token, // refresh_token
+          displayName, // fullName
+          photoUrl // photoUrl
+        );
       }
     } catch (err: any) {
       handleLoginError(err);
@@ -298,11 +345,18 @@ export function Login() {
 
           <form onSubmit={form.onSubmit(handleSubmit)}>
             {/* Logo */}
-            <img
-              src="/logoG.png"
-              alt="DO-GROUP Logo"
-              className="login-form-logo"
-            />
+            <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+              <img
+                src={logoDoGroup}
+                alt="DO-GROUP Logo"
+                style={{
+                  width: '200px',
+                  height: 'auto',
+                  maxWidth: '100%',
+                  display: 'inline-block'
+                }}
+              />
+            </div>
 
             {/* Título SGI con tipografía mejorada */}
             <Title
@@ -349,7 +403,7 @@ export function Login() {
               required
               size="md"
               mb="md"
-              {...form.getInputProps('username')}
+              {...form.getInputProps('email')}
             />
 
             {/* Campo de Contraseña */}
