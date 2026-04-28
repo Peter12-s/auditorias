@@ -1,0 +1,21 @@
+steps:
+  # Instalar dependencias
+  - name: 'node:20'
+    entrypoint: npm
+    args: ['install']
+
+  # Construir el proyecto
+  - name: 'node:20'
+    entrypoint: npm
+    args: ['run', 'build']
+    env:
+      - 'VITE_API_URL=https://sgi-backend-1008998051554.us-central1.run.app'
+      - 'NODE_ENV=production'
+
+  # Subir archivos al bucket
+  - name: 'gcr.io/cloud-builders/gsutil'
+    args: ['-m', 'cp', '-r', 'dist/*', 'gs://dogroup-sgi-frontend/']
+
+  # Hacer los archivos públicos
+  - name: 'gcr.io/cloud-builders/gsutil'
+    args: ['-m', 'acl', 'ch', '-r', '-u', 'AllUsers:R', 'gs://dogroup-sgi-frontend/']
