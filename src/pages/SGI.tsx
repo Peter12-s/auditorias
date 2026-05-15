@@ -117,6 +117,7 @@ interface Subpunto {
   templateSubpointId?: string;
   nombre: string;
   periodicidad: string; // Diaria, Semanal, Mensual, etc.
+  isOnetime?: boolean;
   archivoUpload?: string; // Ruta del archivo
   archivoDownloadUrl?: string; // URL firmada para visualizar/descargar
   extraContentUrl?: string; // URL del archivo extra
@@ -338,20 +339,29 @@ export function SGI() {
     };
   };
 
-  const mapSubpointFromApi = (sub: any): Subpunto => ({
-    id: String(sub.subpointId || sub.id),
-    templateSubpointId: String(sub.templateSubpointId || sub.template_subpoint_id || sub.subpointId || sub.id),
-    nombre: sub.nombre || sub.name,
-    periodicidad: mapPeriodicityToUI(sub.periodicidad || sub.periodicity),
-    archivoUpload: sub.archivoUpload || '',
-    archivoDownloadUrl: sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl || '',
-    extraContentUrl: sub.extraContentUrl || sub.extra_content_url || sub.extraFileUrl || sub.extra_file_url || '',
-    estado: sub.estado !== false,
-    archivoCargado: sub.hasFiles === true || !!(sub.archivoUpload || sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl),
-    cambios: [],
-    mensajes: [],
-    auditPeriods: sub.auditPeriods || [],
-  });
+  const mapSubpointFromApi = (sub: any): Subpunto => {
+    const rawPeriodicity = sub.periodicidad || sub.periodicity || '';
+    const isOneTime =
+      sub.isOneTime === true ||
+      sub.isOnetime === true ||
+      ['one_time', 'one-time', 'onetime'].includes(String(rawPeriodicity).toLowerCase());
+
+    return {
+      id: String(sub.subpointId || sub.id),
+      templateSubpointId: String(sub.templateSubpointId || sub.template_subpoint_id || sub.subpointId || sub.id),
+      nombre: sub.nombre || sub.name,
+      periodicidad: isOneTime ? 'Una sola vez' : mapPeriodicityToUI(rawPeriodicity),
+      isOnetime: isOneTime,
+      archivoUpload: sub.archivoUpload || '',
+      archivoDownloadUrl: sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl || '',
+      extraContentUrl: sub.extraContentUrl || sub.extra_content_url || sub.extraFileUrl || sub.extra_file_url || '',
+      estado: sub.estado !== false,
+      archivoCargado: sub.hasFiles === true || !!(sub.archivoUpload || sub.downloadUrl || sub.archivoDownloadUrl || sub.file?.downloadUrl),
+      cambios: [],
+      mensajes: [],
+      auditPeriods: sub.auditPeriods || [],
+    };
+  };
 
   const formatNotificationDate = (value: string): string => {
     const date = new Date(value);
@@ -924,6 +934,9 @@ export function SGI() {
     const map: { [key: string]: string } = {
       'monthly': 'Mensual',
       'yearly': 'Anual',
+      'one_time': 'Una sola vez',
+      'one-time': 'Una sola vez',
+      'onetime': 'Una sola vez',
     };
     return map[periodicity.toLowerCase()] || 'Mensual';
   };
@@ -1248,6 +1261,7 @@ export function SGI() {
       periodoInicio,
       periodoFin,
       duracionAnios,
+      isOnetime: subpunto.periodicidad === 'Una sola vez' || subpunto.isOnetime === true,
     });
     setOpenedSubpunto(true);
   };
@@ -1265,8 +1279,9 @@ export function SGI() {
             parseInt(editingSubpunto.puntoId),
             parseInt(editingSubpunto.subpunto.id),
             values.nombre,
-            'monthly',
-            []
+            undefined,
+            undefined,
+            true
           );
 
           setEmpresas((prev) =>
@@ -1284,6 +1299,7 @@ export function SGI() {
                                     ...sp, 
                                     nombre: values.nombre,
                                     periodicidad: 'Una sola vez',
+                                    isOnetime: true,
                                     estado: true,
                                   }
                                 : sp
@@ -1313,8 +1329,9 @@ export function SGI() {
           const response = await createSubpoint(
             parseInt(selectedPunto),
             values.nombre,
-            'monthly',
-            []
+            undefined,
+            undefined,
+            true
           );
 
           setEmpresas((prev) =>
@@ -1338,6 +1355,7 @@ export function SGI() {
                                 ),
                                 nombre: values.nombre,
                                 periodicidad: 'Una sola vez',
+                                isOnetime: true,
                                 estado: true,
                                 archivoCargado: false,
                                 cambios: [],
