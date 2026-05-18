@@ -3203,6 +3203,14 @@ export function SGI() {
               label="Una sola vez (Sin periodos de auditoría)"
               description="Marque esta opción si el subpunto solo debe ejecutarse una vez"
               {...formSubpunto.getInputProps('isOnetime', { type: 'checkbox' })}
+              onChange={(event) => {
+                formSubpunto.setFieldValue('isOnetime', event.currentTarget.checked);
+                if (event.currentTarget.checked) {
+                  // Limpiar campos de período cuando se marca "Una sola vez"
+                  formSubpunto.setFieldValue('periodoInicio', null);
+                  formSubpunto.setFieldValue('periodoFin', null);
+                }
+              }}
             />
 
             {!formSubpunto.values.isOnetime && (
