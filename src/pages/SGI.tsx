@@ -1071,16 +1071,19 @@ export function SGI() {
     },
     validate: {
       nombre: (value) => (!value ? 'El nombre es requerido' : null),
-      periodicidad: (value) => (!value ? 'La periodicidad es requerida' : null),
+      periodicidad: (value, values) => {
+        if (values.isOnetime) return null;
+        return !value ? 'La periodicidad es requerida' : null;
+      },
       periodoInicio: (value, values) => {
-        // Solo validar si es Mensual
+        if (values.isOnetime) return null;
         if (values.periodicidad === 'Mensual' && !value) {
           return 'El periodo de inicio es requerido';
         }
         return null;
       },
       periodoFin: (value, values) => {
-        // Solo validar si es Mensual
+        if (values.isOnetime) return null;
         if (values.periodicidad === 'Mensual') {
           if (!value) return 'El periodo de fin es requerido';
           if (values.periodoInicio && value < values.periodoInicio) {
@@ -1090,7 +1093,7 @@ export function SGI() {
         return null;
       },
       duracionAnios: (value, values) => {
-        // Solo validar si es Anual
+        if (values.isOnetime) return null;
         if (values.periodicidad === 'Anual' && !value) {
           return 'La duración es requerida';
         }
