@@ -218,19 +218,29 @@ export async function createPoint(companyUserId: number, name: string) {
 }
 
 export async function createSubpoint(
-  pointId: number, 
-  name: string, 
-  periodicity: 'monthly' | 'yearly',
-  auditPeriods?: { startMonth: number; startYear: number; endMonth: number; endYear: number }[]
+  pointId: number,
+  name: string,
+  periodicity?: 'monthly' | 'yearly',
+  auditPeriods?: { startMonth: number; startYear: number; endMonth: number; endYear: number }[],
+  isOneTime?: boolean
 ) {
+  const data: any = { name };
+
+  if (isOneTime) {
+    data.isOneTime = true;
+  } else {
+    if (periodicity) {
+      data.periodicity = periodicity;
+    }
+    if (auditPeriods) {
+      data.auditPeriods = auditPeriods;
+    }
+  }
+
   return BasicPetition({
     endpoint: `/templates/points/${pointId}/subpoints`,
     method: 'POST',
-    data: {
-      name,
-      periodicity,
-      auditPeriods: auditPeriods || [],
-    },
+    data,
     showNotifications: true,
   });
 }
@@ -247,18 +257,26 @@ export async function updatePoint(companyUserId: number, pointId: number, name: 
 }
 
 export async function updateSubpoint(
-  pointId: number, 
-  subpointId: number, 
-  name: string, 
+  pointId: number,
+  subpointId: number,
+  name: string,
   periodicity?: 'monthly' | 'yearly',
-  auditPeriods?: { startMonth: number; startYear: number; endMonth: number; endYear: number }[]
+  auditPeriods?: { startMonth: number; startYear: number; endMonth: number; endYear: number }[],
+  isOneTime?: boolean
 ) {
   const data: any = { name };
-  if (periodicity) {
-    data.periodicity = periodicity;
+
+  if (typeof isOneTime === 'boolean') {
+    data.isOneTime = isOneTime;
   }
-  if (auditPeriods && auditPeriods.length > 0) {
-    data.auditPeriods = auditPeriods;
+
+  if (!isOneTime) {
+    if (periodicity) {
+      data.periodicity = periodicity;
+    }
+    if (auditPeriods && auditPeriods.length > 0) {
+      data.auditPeriods = auditPeriods;
+    }
   }
   
   return BasicPetition({
